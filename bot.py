@@ -1,6 +1,5 @@
-import psycopg2
+import sqlite3
 import os
-from urllib.parse import urlparse # Untuk mem-parsing URL database
 import logging
 import asyncio
 from datetime import datetime
@@ -13,50 +12,37 @@ from config import BOT_TOKEN, ADMIN_ID
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
 def setup_database():
-    """Menghubungkan ke database PostgreSQL di Railway dan membuat tabel jika belum ada."""
+    """Menghubungkan ke database SQLite dan membuat tabel jika belum ada."""
     
-    # Ambil URL database dari environment variable yang disediakan Railway
-    db_url = os.environ.get("DATABASE_URL")
-    if not db_url:
-        raise Exception("DATABASE_URL environment variable tidak ditemukan!")
-
-    # Parse URL untuk mendapatkan kredensial
-    result = urlparse(db_url)
-    conn = psycopg2.connect(
-        dbname=result.path[1:],
-        user=result.username,
-        password=result.password,
-        host=result.hostname,
-        port=result.port
-    )
+    # Path untuk database SQLite
+    db_path = os.path.join(os.path.dirname(__file__), 'bot_database.db')
     
+    conn = sqlite3.connect(db_path, check_same_thread=False)
     cursor = conn.cursor()
     
-    # SQL untuk membuat tabel (SINTAKS SEDIKIT BERBEDA UNTUK POSTGRES)
-    # SERIAL PRIMARY KEY adalah auto-increment di PostgreSQL
-    # BOOLEAN adalah tipe data asli, tidak perlu INTEGER
+    # SQL untuk membuat tabel (SQLite syntax)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
-            user_id BIGINT PRIMARY KEY,
+            user_id INTEGER PRIMARY KEY,
             username TEXT,
-            is_registered BOOLEAN DEFAULT FALSE,
-            is_admin BOOLEAN DEFAULT FALSE
+            is_registered INTEGER DEFAULT 0,
+            is_admin INTEGER DEFAULT 0
         );
     ''')
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS keywords (
-            id SERIAL PRIMARY KEY,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             keyword TEXT UNIQUE NOT NULL,
             response TEXT NOT NULL
         );
     ''')
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS message_history (
-            id SERIAL PRIMARY KEY,
-            user_id BIGINT,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
             message_text TEXT,
             response_text TEXT,
-            timestamp TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
         );
     ''')
     
@@ -251,7 +237,7 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     log_message(update.effective_user.id, f"[BROADCAST] {message_to_send}", f"Berhasil: {success_count}, Gagal: {fail_count}")
 
 async def help_command(update: Update, context: CallbackContext): # Tambahkan 'async'
-    """Menampilkan pesan bantuan yang berbeda untuk user biasa dan admin."""
+    """Menampilkan pesan bantuan yang berbeda untuk user biasa dan admin.""" 
     user_id = update.effective_user.id
     cursor = db_conn.cursor()
     
@@ -305,9 +291,7 @@ async def view_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         response_message = history_title
         for timestamp, message, response in records:
-            # Format waktu agar lebih mudah dibaca
-            dt_object = datetime.fromisoformat(timestamp.split('.')[0])
-            formatted_time = dt_object.strftime('%d %b %Y, %H:%M')
+            formatted_time = timestamp
             
             response_message += f"🗓️ *{formatted_time}*\n"
             response_message += f"  👤 *User:* `{message or 'N/A'}`\n"
@@ -329,8 +313,7 @@ async def view_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         response_message = history_title
         for user_id, timestamp, message, response in records:
-            dt_object = datetime.fromisoformat(timestamp.split('.')[0])
-            formatted_time = dt_object.strftime('%d %b %Y, %H:%M')
+            formatted_time = timestamp
             
             response_message += f"🗓️ *{formatted_time}* (User ID: `{user_id}`)\n"
             response_message += f"  👤 *User:* `{message or 'N/A'}`\n"
@@ -340,6 +323,15 @@ async def view_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(response_message, parse_mode='Markdown')
 
 def main():
+    global db_conn
+    db_conn = setup_database()
+    
+    # Set admin as admin in database if not already set
+    cursor = db_conn.cursor()
+    cursor.execute("INSERT OR IGNORE INTO users (user_id, is_admin) VALUES (?, 1)", (ADMIN_ID,))
+    cursor.execute("UPDATE users SET is_admin = 1 WHERE user_id = ?", (ADMIN_ID,))
+    db_conn.commit()
+    
     application = Application.builder().token(BOT_TOKEN).build()
 
     # Command Handlers
