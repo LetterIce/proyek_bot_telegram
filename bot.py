@@ -538,7 +538,7 @@ async def ai_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status = "✅ AI Core: Online" if ai_core.is_available() else "❌ AI Core: Offline"
     config_status = f"🔧 AI Enabled: {'Yes' if GEMINI_ENABLED else 'No'}"
     
-    await update.message.reply_text(f"{status}\n{vision_status}\n{config_status}")
+    await update.message.reply_text(f"{status}\n{config_status}")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show help message."""
