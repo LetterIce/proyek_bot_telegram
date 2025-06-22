@@ -79,6 +79,30 @@ class Database:
                 );
             ''')
             
+            # Conversation context table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS conversation_context (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    message_text TEXT NOT NULL,
+                    response_text TEXT NOT NULL,
+                    timestamp TEXT NOT NULL,
+                    context_window INTEGER DEFAULT 1,
+                    FOREIGN KEY (user_id) REFERENCES users (user_id)
+                );
+            ''')
+            
+            # User conversation settings table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS user_conversation_settings (
+                    user_id INTEGER PRIMARY KEY,
+                    context_enabled INTEGER DEFAULT 1,
+                    max_context_messages INTEGER DEFAULT 10,
+                    last_context_clear TEXT,
+                    FOREIGN KEY (user_id) REFERENCES users (user_id)
+                );
+            ''')
+            
             conn.commit()
             logger.info("Database setup completed successfully")
 
@@ -274,18 +298,27 @@ class Database:
             logger.error(f"Error deleting keyword '{keyword}': {e}")
             return False
     
-    def log_message(self, user_id: int, message_text: str, response_text: str, message_type: str = 'normal') -> bool:
+    def log_message(self, user_id: int, message_text: str, response_text: str, message_type: str = 'normal', file_info: dict = None) -> bool:
         """Log a message interaction."""
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
+                
+                # Add file info to message text if present
+                full_message = message_text
+                if file_info:
+                    file_type = file_info.get('type', 'file')
+                    file_name = file_info.get('name', 'unknown')
+                    full_message = f"[{file_type.upper()}] {file_name}: {message_text}"
+                
                 cursor.execute("""
                     INSERT INTO message_history (user_id, message_text, response_text, message_type, timestamp)
                     VALUES (?, ?, ?, ?, datetime('now'))
-                """, (user_id, message_text, response_text, message_type))
+                """, (user_id, full_message, response_text, message_type))
                 conn.commit()
                 return True
         except Exception as e:
+            logger.error(f"Error logging message: {e}")
             return False
 
     def get_user_history(self, user_id: int, limit: int = 10):
@@ -364,6 +397,126 @@ class Database:
                 conn.commit()
         except Exception as e:
             logger.error(f"Error incrementing message count: {e}")
+
+    def add_conversation_message(self, user_id: int, message_text: str, response_text: str, file_info: dict = None) -> bool:
+        """Add a message to conversation context."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                # Get user's max context setting
+                max_context = self.get_user_context_limit(user_id)
+                
+                # Add file info to message text if present
+                full_message = message_text
+                if file_info:
+                    file_type = file_info.get('type', 'file')
+                    file_name = file_info.get('name', 'unknown')
+                    full_message = f"[{file_type.upper()}] {file_name}: {message_text}"
+                
+                # Add new message
+                cursor.execute("""
+                    INSERT INTO conversation_context (user_id, message_text, response_text, timestamp)
+                    VALUES (?, ?, ?, datetime('now'))
+                """, (user_id, full_message, response_text))
+                
+                # Clean up old messages beyond limit
+                cursor.execute("""
+                    DELETE FROM conversation_context 
+                    WHERE user_id = ? AND id NOT IN (
+                        SELECT id FROM conversation_context 
+                        WHERE user_id = ? 
+                        ORDER BY timestamp DESC 
+                        LIMIT ?
+                    )
+                """, (user_id, user_id, max_context))
+                
+                conn.commit()
+                return True
+        except Exception as e:
+            logger.error(f"Error adding conversation message: {e}")
+            return False
+    
+    def get_conversation_context(self, user_id: int, limit: int = None) -> List[Dict]:
+        """Get conversation context for a user."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                if limit is None:
+                    limit = self.get_user_context_limit(user_id)
+                
+                cursor.execute("""
+                    SELECT message_text, response_text, timestamp
+                    FROM conversation_context 
+                    WHERE user_id = ?
+                    ORDER BY timestamp ASC
+                    LIMIT ?
+                """, (user_id, limit))
+                
+                columns = [description[0] for description in cursor.description]
+                return [dict(zip(columns, row)) for row in cursor.fetchall()]
+        except Exception as e:
+            logger.error(f"Error getting conversation context: {e}")
+            return []
+    
+    def clear_conversation_context(self, user_id: int) -> bool:
+        """Clear conversation context for a user."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM conversation_context WHERE user_id = ?", (user_id,))
+                cursor.execute("""
+                    INSERT OR REPLACE INTO user_conversation_settings (user_id, last_context_clear)
+                    VALUES (?, datetime('now'))
+                """, (user_id,))
+                conn.commit()
+                return True
+        except Exception as e:
+            logger.error(f"Error clearing conversation context: {e}")
+            return False
+    
+    def get_user_context_limit(self, user_id: int) -> int:
+        """Get user's context message limit."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT max_context_messages FROM user_conversation_settings WHERE user_id = ?
+                """, (user_id,))
+                result = cursor.fetchone()
+                return result[0] if result else 10
+        except Exception as e:
+            return 10
+    
+    def set_user_context_settings(self, user_id: int, enabled: bool = True, max_messages: int = 10) -> bool:
+        """Set user's conversation context settings."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    INSERT OR REPLACE INTO user_conversation_settings 
+                    (user_id, context_enabled, max_context_messages)
+                    VALUES (?, ?, ?)
+                """, (user_id, int(enabled), max_messages))
+                conn.commit()
+                return True
+        except Exception as e:
+            logger.error(f"Error setting context settings: {e}")
+            return False
+    
+    def is_context_enabled(self, user_id: int) -> bool:
+        """Check if conversation context is enabled for user."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT context_enabled FROM user_conversation_settings WHERE user_id = ?
+                """, (user_id,))
+                result = cursor.fetchone()
+                return bool(result[0]) if result else True  # Default enabled
+        except Exception as e:
+            return True
 
 # Global database instance
 db = Database()

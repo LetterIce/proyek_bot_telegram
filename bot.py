@@ -7,6 +7,7 @@ from config import BOT_TOKEN, ADMIN_ID, PLUGINS_ENABLED, LOG_LEVEL, LOG_FILE, GE
 from database import db
 from gemini_client import gemini_client
 from utils import registered_only, admin_only, rate_limit, update_user_info, broadcast_message, format_user_info, split_message, is_admin, update_user_activity
+from image_utils import download_image, validate_and_process_image, get_image_info, is_image_file
 
 # Setup logging
 logging.basicConfig(
@@ -92,7 +93,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             'is_first_interaction': is_first_interaction
         }
         
-        gemini_response = await gemini_client.generate_response(text, user_info)
+        # Get conversation context if enabled for user
+        conversation_history = []
+        if db.is_context_enabled(user_id):
+            conversation_history = db.get_conversation_context(user_id)
+        
+        gemini_response = await gemini_client.generate_response(text, user_info, conversation_history)
         
         # Delete loading message
         if loading_message:
@@ -111,6 +117,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Send response without robot emoji prefix
             await update.message.reply_text(gemini_response)
             db.log_message(user_id, text, gemini_response, 'gemini')
+            
+            # Add to conversation context if enabled
+            if db.is_context_enabled(user_id):
+                db.add_conversation_message(user_id, text, gemini_response)
         else:
             # Only show error if Gemini fails to respond
             error_response = "Maaf, terjadi kesalahan saat memproses permintaan Anda. Silakan coba lagi."
@@ -126,6 +136,186 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db.log_message(user_id, text, offline_response)
         db.increment_user_message_count(user_id)
 
+@rate_limit
+@registered_only
+async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle image messages."""
+    user_id = update.effective_user.id
+    update_user_activity(user_id)
+    
+    logger.info(f"Processing image from user {user_id}")
+    
+    # Get image and caption
+    file_id = None
+    file_name = None
+    
+    try:
+        if update.message.photo:
+            # Get the largest photo
+            photo = update.message.photo[-1]
+            file_id = photo.file_id
+            file_name = f"photo_{photo.file_unique_id}.jpg"
+            logger.info(f"Processing photo: {file_id}")
+        elif update.message.document and is_image_file(update.message.document.file_name):
+            # Handle image sent as document
+            photo = update.message.document
+            file_id = photo.file_id
+            file_name = photo.file_name or "image.jpg"
+            logger.info(f"Processing document image: {file_id}, filename: {file_name}")
+        else:
+            logger.warning("No valid image found in message")
+            return
+        
+        caption = update.message.caption or ""
+        logger.info(f"Image caption: '{caption}'")
+        
+        # Check if Gemini Vision is available
+        if not (GEMINI_ENABLED and gemini_client.is_vision_available()):
+            offline_response = "Maaf, fitur analisis gambar sedang tidak tersedia. 📷❌"
+            await update.message.reply_text(offline_response)
+            
+            file_info = {'type': 'image', 'name': file_name}
+            db.log_message(user_id, caption or "[Gambar tanpa caption]", offline_response, 'image', file_info)
+            return
+        
+        # Send loading indicator
+        loading_message = None
+        try:
+            if os.path.exists(LOADING_GIF_PATH):
+                with open(LOADING_GIF_PATH, 'rb') as gif_file:
+                    loading_message = await update.message.reply_animation(
+                        animation=gif_file,
+                        caption="👁️ Sedang menganalisis gambar..."
+                    )
+            else:
+                loading_message = await update.message.reply_text("👁️ Sedang menganalisis gambar... 🔍")
+        except Exception as e:
+            logger.warning(f"Failed to send loading indicator: {e}")
+            loading_message = await update.message.reply_text("👁️ Menganalisis gambar...")
+        
+        # Download image
+        logger.info(f"Downloading image with file_id: {file_id}")
+        image_data = await download_image(context.bot, file_id)
+        if not image_data:
+            error_response = "❌ Gagal mengunduh gambar. Pastikan gambar tidak terlalu besar dan coba lagi."
+            await update.message.reply_text(error_response)
+            
+            # Delete loading message
+            if loading_message:
+                try:
+                    await context.bot.delete_message(
+                        chat_id=update.effective_chat.id,
+                        message_id=loading_message.message_id
+                    )
+                except:
+                    pass
+            
+            file_info = {'type': 'image', 'name': file_name}
+            db.log_message(user_id, caption or "[Gambar tanpa caption]", error_response, 'image', file_info)
+            return
+        
+        logger.info(f"Successfully downloaded image: {len(image_data)} bytes")
+        
+        # Validate and process image
+        processed_image = validate_and_process_image(image_data)
+        if not processed_image:
+            error_response = "❌ Format gambar tidak didukung atau gambar rusak. Coba dengan gambar format JPG, PNG, atau GIF."
+            await update.message.reply_text(error_response)
+            
+            # Delete loading message
+            if loading_message:
+                try:
+                    await context.bot.delete_message(
+                        chat_id=update.effective_chat.id,
+                        message_id=loading_message.message_id
+                    )
+                except:
+                    pass
+            
+            file_info = {'type': 'image', 'name': file_name}
+            db.log_message(user_id, caption or "[Gambar tanpa caption]", error_response, 'image', file_info)
+            return
+        
+        # Get image info for logging
+        image_info = get_image_info(processed_image)
+        logger.info(f"Processing image: {file_name}, {image_info.get('width', 0)}x{image_info.get('height', 0)}")
+        
+        # Prepare user context
+        message_count = db.get_user_message_count(user_id)
+        is_first_interaction = message_count == 0
+        
+        user_info = {
+            'first_name': update.effective_user.first_name,
+            'is_admin': is_admin(user_id),
+            'is_first_interaction': is_first_interaction
+        }
+        
+        # Analyze image with Gemini Vision
+        logger.info("Starting image analysis with Gemini Vision...")
+        analysis = await gemini_client.analyze_image(processed_image, caption, user_info)
+        
+        # Delete loading message
+        if loading_message:
+            try:
+                await context.bot.delete_message(
+                    chat_id=update.effective_chat.id,
+                    message_id=loading_message.message_id
+                )
+            except Exception as e:
+                logger.warning(f"Failed to delete loading message: {e}")
+        
+        if analysis:
+            logger.info(f"Successfully analyzed image: {len(analysis)} characters")
+            
+            # Limit response length
+            if len(analysis) > 4000:
+                analysis = analysis[:3970] + "..."
+            
+            # Send analysis result
+            response_text = f"📸 **Analisis Gambar:**\n\n{analysis}"
+            await update.message.reply_text(response_text, parse_mode='Markdown')
+            
+            # Log message with file info
+            file_info = {
+                'type': 'image',
+                'name': file_name,
+                'size': f"{image_info.get('width', 0)}x{image_info.get('height', 0)}"
+            }
+            
+            message_text = caption or "[Gambar tanpa caption]"
+            db.log_message(user_id, message_text, analysis, 'image', file_info)
+            
+            # Add to conversation context if enabled
+            if db.is_context_enabled(user_id):
+                db.add_conversation_message(user_id, message_text, analysis, file_info)
+        else:
+            logger.error("Failed to get analysis from Gemini Vision")
+            error_response = "❌ Maaf, gagal menganalisis gambar. Coba lagi dalam beberapa saat."
+            await update.message.reply_text(error_response)
+            
+            file_info = {'type': 'image', 'name': file_name}
+            db.log_message(user_id, caption or "[Gambar tanpa caption]", error_response, 'image', file_info)
+        
+        # Increment message count
+        db.increment_user_message_count(user_id)
+        
+    except Exception as e:
+        logger.error(f"Error processing image: {e}")
+        import traceback
+        logger.error(f"Full traceback: {traceback.format_exc()}")
+        
+        if loading_message:
+            try:
+                await context.bot.delete_message(
+                    chat_id=update.effective_chat.id,
+                    message_id=loading_message.message_id
+                )
+            except:
+                pass
+        
+        error_response = "❌ Terjadi kesalahan saat menganalisis gambar. Silakan coba lagi."
+        await update.message.reply_text(error_response)
+
 @registered_only
 async def handle_unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle unknown commands (messages starting with /)."""
@@ -137,6 +327,124 @@ async def handle_unknown_command(update: Update, context: ContextTypes.DEFAULT_T
     command_response = "Maaf, saya tidak mengerti perintah itu. Ketik /help untuk bantuan."
     await update.message.reply_text(command_response)
     db.log_message(user_id, text, command_response)
+
+@registered_only
+async def clear_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Clear user's conversation history."""
+    user_id = update.effective_user.id
+    
+    if db.clear_conversation_context(user_id):
+        await update.message.reply_text(
+            "🗑️ Riwayat percakapan Anda telah dihapus.\n"
+            "Percakapan baru akan dimulai tanpa konteks sebelumnya."
+        )
+    else:
+        await update.message.reply_text("❌ Gagal menghapus riwayat percakapan.")
+
+@registered_only
+async def conversation_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Manage conversation context settings."""
+    user_id = update.effective_user.id
+    
+    if not context.args:
+        # Show current settings
+        enabled = db.is_context_enabled(user_id)
+        limit = db.get_user_context_limit(user_id)
+        context_history = db.get_conversation_context(user_id)
+        
+        status = "🟢 Aktif" if enabled else "🔴 Nonaktif"
+        settings_text = (
+            f"⚙️ **Pengaturan Percakapan:**\n\n"
+            f"📝 Status Memori: {status}\n"
+            f"📊 Batas Pesan: {limit} pesan\n"
+            f"💬 Pesan Tersimpan: {len(context_history)} pesan\n\n"
+            f"**Cara Penggunaan:**\n"
+            f"`/conversation on` - Aktifkan memori\n"
+            f"`/conversation off` - Nonaktifkan memori\n"
+            f"`/conversation limit <angka>` - Atur batas pesan (1-50)\n"
+            f"`/clearconversation` - Hapus riwayat percakapan"
+        )
+        
+        await update.message.reply_text(settings_text, parse_mode='Markdown')
+        return
+    
+    command = context.args[0].lower()
+    
+    if command == "on":
+        db.set_user_context_settings(user_id, enabled=True)
+        await update.message.reply_text("✅ Memori percakapan diaktifkan! Bot akan mengingat percakapan sebelumnya.")
+    
+    elif command == "off":
+        db.set_user_context_settings(user_id, enabled=False)
+        await update.message.reply_text("❌ Memori percakapan dinonaktifkan. Bot tidak akan mengingat percakapan sebelumnya.")
+    
+    elif command == "limit":
+        if len(context.args) < 2:
+            await update.message.reply_text("❌ Format: `/conversation limit <angka>`\nContoh: `/conversation limit 15`", parse_mode='Markdown')
+            return
+        
+        try:
+            new_limit = int(context.args[1])
+            if new_limit < 1 or new_limit > 50:
+                await update.message.reply_text("❌ Batas pesan harus antara 1-50.")
+                return
+            
+            current_enabled = db.is_context_enabled(user_id)
+            db.set_user_context_settings(user_id, enabled=current_enabled, max_messages=new_limit)
+            await update.message.reply_text(f"✅ Batas pesan percakapan diatur ke {new_limit} pesan.")
+        
+        except ValueError:
+            await update.message.reply_text("❌ Angka tidak valid.")
+    
+    else:
+        await update.message.reply_text(
+            "❌ Perintah tidak dikenal.\n\n"
+            "Gunakan: `on`, `off`, atau `limit <angka>`",
+            parse_mode='Markdown'
+        )
+
+@registered_only
+async def show_conversation_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show user's conversation history."""
+    user_id = update.effective_user.id
+    
+    if not db.is_context_enabled(user_id):
+        await update.message.reply_text(
+            "❌ Memori percakapan tidak aktif.\n"
+            "Gunakan `/conversation on` untuk mengaktifkannya.",
+            parse_mode='Markdown'
+        )
+        return
+    
+    history = db.get_conversation_context(user_id)
+    
+    if not history:
+        await update.message.reply_text("📭 Belum ada riwayat percakapan.")
+        return
+    
+    message = f"📜 **Riwayat Percakapan** ({len(history)} pesan):\n\n"
+    
+    for i, record in enumerate(history, 1):
+        timestamp = record.get('timestamp', 'Unknown time')[:16]  # Show date and time only
+        user_msg = record.get('message_text', 'No message')
+        bot_response = record.get('response_text', 'No response')
+        
+        # Truncate long messages for display
+        if len(user_msg) > 100:
+            user_msg = user_msg[:97] + "..."
+        if len(bot_response) > 100:
+            bot_response = bot_response[:97] + "..."
+        
+        entry = (
+            f"{i}. 🕐 {timestamp}\n"
+            f"   👤 Anda: {user_msg}\n"
+            f"   🤖 Bot: {bot_response}\n\n"
+        )
+        message += entry
+    
+    chunks = split_message(message, max_length=4000)
+    for chunk in chunks:
+        await update.message.reply_text(chunk, parse_mode='Markdown')
 
 @admin_only
 async def add_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -329,6 +637,14 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/start - Start the bot\n"
         "/register - Register as member\n"
         "/help - Show this help\n\n"
+        "**Features:**\n"
+        "💬 Chat with AI - Send any text message\n"
+        "📷 Image Analysis - Send photos with or without captions\n"
+        "🗂️ Document Images - Send images as documents\n\n"
+        "**Conversation Commands:**\n"
+        "/conversation - Kelola pengaturan memori percakapan\n"
+        "/clearconversation - Hapus riwayat percakapan\n"
+        "/myhistory - Lihat riwayat percakapan Anda\n\n"
     )
     
     if is_admin(user_id):
@@ -438,6 +754,9 @@ def main():
     application.add_handler(CommandHandler("broadcast", broadcast))
     application.add_handler(CommandHandler("history", view_history))
     application.add_handler(CommandHandler("stats", view_stats))
+    application.add_handler(CommandHandler("conversation", conversation_settings))
+    application.add_handler(CommandHandler("clearconversation", clear_conversation))
+    application.add_handler(CommandHandler("myhistory", show_conversation_history))
     
     if GEMINI_ENABLED:
         application.add_handler(CommandHandler("geministatus", gemini_status))
@@ -455,6 +774,10 @@ def main():
             logger.warning("Plugin system not available - continuing without plugins")
         except Exception as e:
             logger.error(f"Error loading plugins: {e}")
+    
+    # Handle images (photos and image documents)
+    application.add_handler(MessageHandler(filters.PHOTO, handle_image))
+    application.add_handler(MessageHandler(filters.Document.IMAGE, handle_image))
     
     # Handle unknown commands (messages starting with / but not recognized)
     application.add_handler(MessageHandler(filters.COMMAND, handle_unknown_command))
