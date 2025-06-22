@@ -8,6 +8,7 @@ from database import db
 from ai_core import ai_core
 from utils import registered_only, admin_only, rate_limit, update_user_info, broadcast_message, format_user_info, split_message, is_admin, update_user_activity
 from image_utils import download_image, validate_and_process_image, get_image_info, is_image_file
+from system_info import format_system_stats
 
 # Setup logging
 logging.basicConfig(
@@ -583,14 +584,25 @@ async def view_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         users = db.get_all_users()
         registered_users = db.get_registered_users()
         
-        stats_text = (
+        # Bot Statistics
+        bot_stats = (
             f"📊 **Bot Statistics:**\n\n"
             f"👥 Total Users: {len(users)}\n"
             f"✅ Registered Users: {len(registered_users)}\n"
-            f"🚀 Bot Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            f"🚀 Bot Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
         )
         
-        await update.message.reply_text(stats_text, parse_mode='Markdown')
+        # Get system information
+        system_stats = format_system_stats()
+        
+        # Combine both statistics
+        full_stats = bot_stats + system_stats
+        
+        # Split message if too long
+        chunks = split_message(full_stats, max_length=4000)
+        for chunk in chunks:
+            await update.message.reply_text(chunk, parse_mode='Markdown')
+            
     except Exception as e:
         logger.error(f"Error in view_stats: {e}")
         await update.message.reply_text("❌ Error retrieving statistics.")
