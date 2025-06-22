@@ -3,12 +3,29 @@
 
 # Database files
 *.db
+*.sqlite
+*.sqlite3
 
 # Python cache
 __pycache__/
-*.pyc
-*.pyo
+*.py[cod]
+*$py.class
+
+# Logs
+*.log
+logs/
 
 # IDE files
 .vscode/
 .idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Virtual environment
+venv/
+env/
+.venv/

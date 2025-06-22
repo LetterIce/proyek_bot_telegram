@@ -20,7 +20,9 @@ commands_for_admin = [
     BotCommand("listmembers", "👥 Lihat daftar member"),
     BotCommand("broadcast", "📢 Kirim pesan ke semua member"),
     BotCommand("addadmin", "👑 Tambah admin baru"),
-    BotCommand("history", "📜 Lihat riwayat pesan")
+    BotCommand("history", "📜 Lihat riwayat pesan"),
+    BotCommand("stats", "📊 Lihat statistik bot"),
+    BotCommand("userstats", "📋 Lihat statistik user tertentu")
 ]
 
 async def set_bot_commands():
@@ -44,9 +46,19 @@ async def set_bot_commands():
         )
         print(f"✅ Perintah admin berhasil diatur untuk user ID: {ADMIN_ID}.")
 
+        # 3. Display all commands for verification
+        print("\n📝 Daftar perintah yang telah diatur:")
+        print("👥 Perintah untuk semua user:")
+        for cmd in commands_for_all:
+            print(f"  /{cmd.command} - {cmd.description}")
+        
+        print(f"\n👑 Perintah tambahan untuk admin (ID: {ADMIN_ID}):")
+        admin_only_commands = [cmd for cmd in commands_for_admin if cmd not in commands_for_all]
+        for cmd in admin_only_commands:
+            print(f"  /{cmd.command} - {cmd.description}")
 
 if __name__ == '__main__':
-    print("Mengatur perintah bot...")
+    print("🤖 Mengatur perintah bot...")
     # Jalankan fungsi async menggunakan asyncio.run()
     asyncio.run(set_bot_commands())
-    print("Selesai!")
+    print("✅ Selesai!")
