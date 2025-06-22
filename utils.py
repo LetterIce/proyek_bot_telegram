@@ -146,3 +146,45 @@ def split_message(text, max_length=4096):
         chunks.append(current_chunk.rstrip())
     
     return chunks
+
+def safe_markdown_text(text: str, max_length: int = 4000) -> str:
+    """Safely format text for Telegram markdown, with length limiting."""
+    if not text:
+        return ""
+    
+    # Escape markdown special characters
+    special_chars = ['_', '*', '[', ']', '(', ')', '`']
+    for char in special_chars:
+        text = text.replace(char, f'\\{char}')
+    
+    # Truncate if too long
+    if len(text) > max_length:
+        text = text[:max_length-3] + "..."
+    
+    return text
+
+def chunk_text(text: str, max_length: int = 4000) -> list:
+    """Split text into chunks that fit Telegram's message limit."""
+    if len(text) <= max_length:
+        return [text]
+    
+    chunks = []
+    lines = text.split('\n')
+    current_chunk = []
+    current_length = 0
+    
+    for line in lines:
+        line_length = len(line) + 1  # +1 for newline
+        
+        if current_length + line_length > max_length and current_chunk:
+            chunks.append('\n'.join(current_chunk))
+            current_chunk = [line]
+            current_length = line_length
+        else:
+            current_chunk.append(line)
+            current_length += line_length
+    
+    if current_chunk:
+        chunks.append('\n'.join(current_chunk))
+    
+    return chunks

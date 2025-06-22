@@ -22,6 +22,20 @@ logger = logging.getLogger(__name__)
 MEDIA_DIR = os.path.join(os.path.dirname(__file__), 'media')
 LOADING_GIF_PATH = os.path.join(MEDIA_DIR, 'loading.gif')
 
+def escape_markdown_v2(text: str) -> str:
+    """Escape special characters for MarkdownV2."""
+    special_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+    for char in special_chars:
+        text = text.replace(char, f'\\{char}')
+    return text
+
+def escape_markdown(text: str) -> str:
+    """Escape special characters for Markdown."""
+    special_chars = ['_', '*', '[', ']', '(', ')', '`']
+    for char in special_chars:
+        text = text.replace(char, f'\\{char}')
+    return text
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /start command."""
     user = update.effective_user
@@ -104,18 +118,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def send_loading_indicator(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send loading indicator (GIF or text)."""
-    try:
-        if os.path.exists(LOADING_GIF_PATH):
-            with open(LOADING_GIF_PATH, 'rb') as gif_file:
-                return await update.message.reply_animation(
-                    animation=gif_file,
-                    caption="💭 Sedang berpikir..."
-                )
-        else:
-            return await update.message.reply_text("💭 Sedang memproses permintaan Anda...")
-    except Exception as e:
-        logger.warning(f"Failed to send loading indicator: {e}")
-        return await update.message.reply_text("🤔 Sedang berpikir...")
+    if os.path.exists(LOADING_GIF_PATH):
+        with open(LOADING_GIF_PATH, 'rb') as gif_file:
+            return await update.message.reply_animation(
+                animation=gif_file,
+                caption="💭 Sedang berpikir..."
+            )
+    else:
+        return await update.message.reply_text("💭 Sedang memproses permintaan Anda...")
 
 async def delete_loading_message(loading_message, context: ContextTypes.DEFAULT_TYPE, chat_id: int):
     """Delete loading message."""
@@ -150,19 +160,14 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     # Send loading indicator
-    loading_message = None
-    try:
-        if os.path.exists(LOADING_GIF_PATH):
-            with open(LOADING_GIF_PATH, 'rb') as gif_file:
-                loading_message = await update.message.reply_animation(
-                    animation=gif_file,
-                    caption="👁️ Sedang menganalisis gambar..."
-                )
-        else:
-            loading_message = await update.message.reply_text("👁️ Sedang menganalisis gambar... 🔍")
-    except Exception as e:
-        logger.warning(f"Failed to send loading indicator: {e}")
-        loading_message = await update.message.reply_text("👁️ Menganalisis gambar...")
+    if os.path.exists(LOADING_GIF_PATH):
+        with open(LOADING_GIF_PATH, 'rb') as gif_file:
+            loading_message = await update.message.reply_animation(
+                animation=gif_file,
+                caption="👁️ Sedang menganalisis gambar..."
+            )
+    else:
+        loading_message = await update.message.reply_text("👁️ Sedang menganalisis gambar... 🔍")
     
     # Process image
     image_data = await download_image(context.bot, file_id)
@@ -319,73 +324,133 @@ async def conversation_settings(update: Update, context: ContextTypes.DEFAULT_TY
 
 @registered_only
 async def show_conversation_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show user's conversation history."""
+    """Show conversation history for the user."""
     user_id = update.effective_user.id
     
-    if not db.is_context_enabled(user_id):
+    try:
+        # Use the correct method that exists in the database
+        conversations = db.get_conversation_context(user_id)
+        
+        if not conversations:
+            await update.message.reply_text("📭 Belum ada riwayat percakapan.")
+            return
+        
+        # Build response without complex markdown formatting
+        response_lines = ["📚 Riwayat Percakapan:\n"]
+        
+        # Take only the last 10 conversations for display
+        recent_conversations = conversations[-10:] if len(conversations) > 10 else conversations
+        
+        for i, conv in enumerate(recent_conversations, 1):
+            # Handle different conversation formats
+            if isinstance(conv, dict):
+                # Use the correct field names from the database
+                user_msg = conv.get('message_text', 'Pesan tidak diketahui')
+                bot_msg = conv.get('response_text', 'Tidak ada respons')
+                timestamp = conv.get('timestamp', '')
+            else:
+                # Handle if conv is a tuple or other format
+                user_msg = str(conv)[:100] if conv else 'Pesan tidak diketahui'
+                bot_msg = 'Respons tidak tersedia'
+                timestamp = ''
+            
+            # Truncate long messages
+            if len(user_msg) > 100:
+                user_msg = user_msg[:97] + "..."
+            if len(bot_msg) > 150:
+                bot_msg = bot_msg[:147] + "..."
+            
+            # Clean text to avoid markdown issues
+            user_msg = user_msg.replace('*', '').replace('_', '').replace('`', '').replace('[', '').replace(']', '')
+            bot_msg = bot_msg.replace('*', '').replace('_', '').replace('`', '').replace('[', '').replace(']', '')
+            
+            timestamp_str = ""
+            if timestamp:
+                try:
+                    if isinstance(timestamp, str):
+                        # Parse ISO format timestamp and format it nicely
+                        from datetime import datetime
+                        dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+                        timestamp_str = f" ({dt.strftime('%d/%m %H:%M')})"
+                    else:
+                        timestamp_str = f" ({timestamp.strftime('%d/%m %H:%M')})"
+                except:
+                    timestamp_str = ""
+            
+            response_lines.append(f"{i}.{timestamp_str}")
+            response_lines.append(f"👤 {user_msg}")
+            response_lines.append(f"🤖 {bot_msg}")
+            response_lines.append("")  # Empty line for spacing
+        
+        # Join all lines
+        full_response = "\n".join(response_lines)
+        
+        # Split into chunks if too long
+        chunks = []
+        if len(full_response) > 4000:
+            lines = response_lines
+            current_chunk = []
+            current_length = 0
+            
+            for line in lines:
+                line_length = len(line) + 1
+                if current_length + line_length > 4000 and current_chunk:
+                    chunks.append("\n".join(current_chunk))
+                    current_chunk = [line]
+                    current_length = line_length
+                else:
+                    current_chunk.append(line)
+                    current_length += line_length
+            
+            if current_chunk:
+                chunks.append("\n".join(current_chunk))
+        else:
+            chunks = [full_response]
+        
+        # Send chunks as plain text to avoid markdown issues
+        for i, chunk in enumerate(chunks):
+            if i == 0:
+                await update.message.reply_text(chunk)
+            else:
+                await update.message.reply_text(f"📚 Riwayat Percakapan (lanjutan):\n\n{chunk}")
+        
+        # Add navigation hint
         await update.message.reply_text(
-            "❌ Memori percakapan tidak aktif.\n"
-            "Gunakan `/conversation on` untuk mengaktifkannya.",
-            parse_mode='Markdown'
+            "💡 Tips:\n"
+            "• /clearconversation - Hapus riwayat\n"
+            "• /conversation - Pengaturan percakapan"
         )
-        return
-    
-    history = db.get_conversation_context(user_id)
-    
-    if not history:
-        await update.message.reply_text("📭 Belum ada riwayat percakapan.")
-        return
-    
-    message = f"📜 **Riwayat Percakapan** ({len(history)} pesan):\n\n"
-    
-    for i, record in enumerate(history, 1):
-        timestamp = record.get('timestamp', 'Unknown time')[:16]  # Show date and time only
-        user_msg = record.get('message_text', 'No message')
-        bot_response = record.get('response_text', 'No response')
         
-        # Truncate long messages for display
-        if len(user_msg) > 100:
-            user_msg = user_msg[:97] + "..."
-        if len(bot_response) > 100:
-            bot_response = bot_response[:97] + "..."
-        
-        entry = (
-            f"{i}. 🕐 {timestamp}\n"
-            f"   👤 Anda: {user_msg}\n"
-            f"   🤖 Bot: {bot_response}\n\n"
-        )
-        message += entry
-    
-    chunks = split_message(message, max_length=4000)
-    for chunk in chunks:
-        await update.message.reply_text(chunk, parse_mode='Markdown')
+    except Exception as e:
+        logger.error(f"Error showing conversation history: {e}")
+        await update.message.reply_text("❌ Terjadi kesalahan saat mengambil riwayat percakapan.")
 
 @admin_only
 async def add_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Add new admin."""
     if not context.args:
-        await update.message.reply_text("Usage: /addadmin <user_id>")
+        await update.message.reply_text("Format: /addadmin <user_id>")
         return
     
     try:
         target_user_id = int(context.args[0])
         db.set_admin(target_user_id, True)
-        await update.message.reply_text(f"✅ User {target_user_id} sekarang adalah admin.")
+        await update.message.reply_text(f"✅ Pengguna {target_user_id} sekarang adalah admin.")
     except ValueError:
-        await update.message.reply_text("❌ User ID harus berupa angka.")
+        await update.message.reply_text("❌ ID pengguna harus berupa angka.")
 
 @admin_only
 async def add_keyword(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Add new keyword."""
     if not context.args:
-        await update.message.reply_text("❌ Format: `/addkeyword <keyword> | <response>`\n\nContoh:\n`/addkeyword halo | Halo! Selamat datang di bot ini!`", parse_mode='Markdown')
+        await update.message.reply_text("❌ Format: `/addkeyword <kata_kunci> | <respon>`\n\nContoh:\n`/addkeyword halo | Halo! Selamat datang di bot ini!`", parse_mode='Markdown')
         return
     
     try:
         full_text = ' '.join(context.args)
         
         if '|' not in full_text:
-            await update.message.reply_text("❌ Format salah! Gunakan:\n`/addkeyword <keyword> | <response>`\n\nContoh:\n`/addkeyword halo | Halo! Selamat datang!`", parse_mode='Markdown')
+            await update.message.reply_text("❌ Format salah! Gunakan:\n`/addkeyword <kata_kunci> | <respon>`\n\nContoh:\n`/addkeyword halo | Halo! Selamat datang!`", parse_mode='Markdown')
             return
         
         parts = full_text.split('|', 1)
@@ -393,54 +458,54 @@ async def add_keyword(update: Update, context: ContextTypes.DEFAULT_TYPE):
         response = parts[1].strip()
         
         if not keyword or not response:
-            await update.message.reply_text("❌ Keyword dan response tidak boleh kosong!")
+            await update.message.reply_text("❌ Kata kunci dan respon tidak boleh kosong!")
             return
         
         if len(keyword) > 100:
-            await update.message.reply_text("❌ Keyword terlalu panjang! Maksimal 100 karakter.")
+            await update.message.reply_text("❌ Kata kunci terlalu panjang! Maksimal 100 karakter.")
             return
         
         if len(response) > 2000:
-            await update.message.reply_text("❌ Response terlalu panjang! Maksimal 2000 karakter.")
+            await update.message.reply_text("❌ Respon terlalu panjang! Maksimal 2000 karakter.")
             return
         
         logger.info(f"Admin {update.effective_user.id} attempting to add keyword: '{keyword}'")
         
         if db.add_keyword(keyword, response, update.effective_user.id):
-            await update.message.reply_text(f"✅ Keyword `{keyword}` berhasil ditambahkan!", parse_mode='Markdown')
-            logger.info(f"Keyword '{keyword}' added successfully")
+            await update.message.reply_text(f"✅ Kata kunci `{keyword}` berhasil ditambahkan!", parse_mode='Markdown')
+            logger.info(f"Kata kunci '{keyword}' berhasil ditambahkan")
         else:
-            await update.message.reply_text(f"❌ Keyword `{keyword}` sudah ada! Gunakan keyword yang berbeda.", parse_mode='Markdown')
+            await update.message.reply_text(f"❌ Kata kunci `{keyword}` sudah ada! Gunakan kata kunci yang berbeda.", parse_mode='Markdown')
             
     except Exception as e:
         logger.error(f"Error in add_keyword: {e}")
-        await update.message.reply_text("❌ Terjadi kesalahan saat menambahkan keyword. Silakan coba lagi.")
+        await update.message.reply_text("❌ Terjadi kesalahan saat menambahkan kata kunci. Silakan coba lagi.")
 
 @admin_only
 async def delete_keyword(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Delete keyword."""
     if not context.args:
-        await update.message.reply_text("❌ Format: `/delkeyword <keyword>`\n\nContoh:\n`/delkeyword halo`", parse_mode='Markdown')
+        await update.message.reply_text("❌ Format: `/delkeyword <kata_kunci>`\n\nContoh:\n`/delkeyword halo`", parse_mode='Markdown')
         return
     
     try:
         keyword = ' '.join(context.args).strip().lower()
         
         if not keyword:
-            await update.message.reply_text("❌ Keyword tidak boleh kosong!")
+            await update.message.reply_text("❌ Kata kunci tidak boleh kosong!")
             return
         
         logger.info(f"Admin {update.effective_user.id} attempting to delete keyword: '{keyword}'")
         
         if db.delete_keyword(keyword):
-            await update.message.reply_text(f"✅ Keyword `{keyword}` berhasil dihapus!", parse_mode='Markdown')
-            logger.info(f"Keyword '{keyword}' deleted successfully")
+            await update.message.reply_text(f"✅ Kata kunci `{keyword}` berhasil dihapus!", parse_mode='Markdown')
+            logger.info(f"Kata kunci '{keyword}' berhasil dihapus")
         else:
-            await update.message.reply_text(f"❌ Keyword `{keyword}` tidak ditemukan!", parse_mode='Markdown')
+            await update.message.reply_text(f"❌ Kata kunci `{keyword}` tidak ditemukan!", parse_mode='Markdown')
             
     except Exception as e:
         logger.error(f"Error in delete_keyword: {e}")
-        await update.message.reply_text("❌ Terjadi kesalahan saat menghapus keyword. Silakan coba lagi.")
+        await update.message.reply_text("❌ Terjadi kesalahan saat menghapus kata kunci. Silakan coba lagi.")
 
 @admin_only
 async def list_keywords(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -450,10 +515,10 @@ async def list_keywords(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keywords = db.get_all_keywords()
         
         if not keywords:
-            await update.message.reply_text("❌ Belum ada keyword yang tersedia.\n\nGunakan `/addkeyword <keyword> | <response>` untuk menambahkan keyword baru.", parse_mode='Markdown')
+            await update.message.reply_text("❌ Belum ada kata kunci yang tersedia.\n\nGunakan `/addkeyword <kata_kunci> | <respon>` untuk menambahkan kata kunci baru.", parse_mode='Markdown')
             return
         
-        message = f"📝 **Daftar Keywords** ({len(keywords)} total):\n\n"
+        message = f"📝 **Daftar Kata Kunci** ({len(keywords)} total):\n\n"
         
         for i, keyword_data in enumerate(keywords, 1):
             keyword = keyword_data.get('keyword', 'Unknown')
@@ -473,9 +538,9 @@ async def list_keywords(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             entry = (
                 f"{i}. **{keyword}**\n"
-                f"   📝 Response: {display_response}\n"
-                f"   📊 Used: {usage_count}x\n"
-                f"   📅 Created: {date_part}\n\n"
+                f"   📝 Respon: {display_response}\n"
+                f"   📊 Digunakan: {usage_count}x\n"
+                f"   📅 Dibuat: {date_part}\n\n"
             )
             message += entry
         
@@ -487,7 +552,7 @@ async def list_keywords(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     except Exception as e:
         logger.error(f"Error in list_keywords: {e}")
-        await update.message.reply_text("❌ Terjadi kesalahan saat mengambil daftar keyword. Silakan coba lagi.")
+        await update.message.reply_text("❌ Terjadi kesalahan saat mengambil daftar kata kunci. Silakan coba lagi.")
 
 @admin_only
 async def list_members(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -495,10 +560,10 @@ async def list_members(update: Update, context: ContextTypes.DEFAULT_TYPE):
     users = db.get_all_users()
     
     if not users:
-        await update.message.reply_text("Belum ada user.")
+        await update.message.reply_text("Belum ada pengguna.")
         return
     
-    message = "👥 **Daftar User:**\n\n"
+    message = "👥 **Daftar Pengguna:**\n\n"
     for user in users:
         message += format_user_info(user) + "\n"
     
@@ -510,22 +575,22 @@ async def list_members(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Broadcast message to all registered users."""
     if not context.args:
-        await update.message.reply_text("Usage: /broadcast <message>")
+        await update.message.reply_text("Format: /broadcast <pesan>")
         return
     
     message_to_send = ' '.join(context.args)
     users = db.get_registered_users()
     
     if not users:
-        await update.message.reply_text("❌ Tidak ada user terdaftar.")
+        await update.message.reply_text("❌ Tidak ada pengguna terdaftar.")
         return
     
-    await update.message.reply_text(f"📡 Memulai broadcast ke {len(users)} user...")
+    await update.message.reply_text(f"📡 Memulai siaran ke {len(users)} pengguna...")
     
     results = await broadcast_message(context, message_to_send)
     
     report = (
-        f"📊 **Hasil Broadcast:**\n"
+        f"📊 **Hasil Siaran:**\n"
         f"✅ Berhasil: {results['success']}\n"
         f"❌ Gagal: {results['failed']}\n"
     )
@@ -535,25 +600,41 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @admin_only
 async def ai_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Check AI status."""
-    status = "✅ AI Core: Online" if ai_core.is_available() else "❌ AI Core: Offline"
-    config_status = f"🔧 AI Enabled: {'Yes' if GEMINI_ENABLED else 'No'}"
+    status = "✅ AI Core: Aktif" if ai_core.is_available() else "❌ AI Core: Nonaktif"
+    config_status = f"🔧 AI Diaktifkan: {'Ya' if GEMINI_ENABLED else 'Tidak'}"
     
-    await update.message.reply_text(f"{status}\n{config_status}")
+    # Get AI model information
+    model_info = ""
+    if ai_core.is_available():
+        try:
+            # Get model name from ai_core
+            model_name = getattr(ai_core, 'model_name', 'Tidak diketahui')
+            
+            model_info = (
+                f"🤖 Model AI: {model_name}\n"
+            )
+        except Exception as e:
+            model_info = "🤖 Model AI: Gagal mendapatkan informasi model"
+    else:
+        model_info = "🤖 Model AI: Tidak tersedia"
+    
+    full_status = f"{status}\n{config_status}\n{model_info}"
+    await update.message.reply_text(full_status)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show help message."""
     user_id = update.effective_user.id
     
     help_text = (
-        "**Bot Features:**\n"
-        "💬 Chat with AI - Send any text message\n"
-        "📷 Image Analysis - Send photos with or without captions\n"
-        "🗂️ Document Images - Send images as documents\n\n"
-        "**General Commands:**\n"
-        "/start - Start the bot\n"
-        "/register - Register as member\n"
-        "/help - Show this help\n\n"
-        "**Conversation Commands:**\n"
+        "**Fitur Bot:**\n"
+        "💬 Chat dengan AI - Kirim pesan teks apa saja\n"
+        "📷 Analisis Gambar - Kirim foto dengan atau tanpa keterangan\n"
+        "🗂️ Gambar Dokumen - Kirim gambar sebagai dokumen\n\n"
+        "**Perintah Umum:**\n"
+        "/start - Memulai bot\n"
+        "/register - Daftar sebagai anggota\n"
+        "/help - Tampilkan bantuan ini\n\n"
+        "**Perintah Percakapan:**\n"
         "/conversation - Kelola pengaturan memori percakapan\n"
         "/clearconversation - Hapus riwayat percakapan\n"
         "/myhistory - Lihat riwayat percakapan Anda\n\n"
@@ -561,19 +642,19 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if is_admin(user_id):
         help_text += (
-            "**Admin Commands:**\n"
-            "/addkeyword `<keyword> | <response>` - Add keyword\n"
-            "/delkeyword `<keyword>` - Delete keyword\n"
-            "/listkeyword - List all keywords\n"
-            "/listmembers - List all users\n"
-            "/addadmin `<user_id>` - Add admin\n"
-            "/broadcast `<message>` - Broadcast message\n"
-            "/history [user_id] - View message history\n"
-            "/stats - View bot statistics\n"
+            "**Perintah Admin:**\n"
+            "/addkeyword `<kata_kunci> | <respon>` - Tambah kata kunci\n"
+            "/delkeyword `<kata_kunci>` - Hapus kata kunci\n"
+            "/listkeyword - Lihat semua kata kunci\n"
+            "/listmembers - Lihat semua pengguna\n"
+            "/addadmin `<user_id>` - Tambah admin\n"
+            "/broadcast `<pesan>` - Siaran pesan\n"
+            "/history [user_id] - Lihat riwayat pesan\n"
+            "/stats - Lihat statistik bot\n"
         )
         
         if GEMINI_ENABLED:
-            help_text += "/aistatus - Check AI status\n"
+            help_text += "/aistatus - Cek status AI\n"
     
     await update.message.reply_text(help_text, parse_mode='Markdown')
 
@@ -586,10 +667,10 @@ async def view_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Bot Statistics
         bot_stats = (
-            f"📊 **Bot Statistics:**\n\n"
-            f"👥 Total Users: {len(users)}\n"
-            f"✅ Registered Users: {len(registered_users)}\n"
-            f"🚀 Bot Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+            f"📊 **Statistik Bot:**\n\n"
+            f"👥 Total Pengguna: {len(users)}\n"
+            f"✅ Pengguna Terdaftar: {len(registered_users)}\n"
+            f"🚀 Bot Dimulai: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
         )
         
         # Get system information
@@ -605,49 +686,91 @@ async def view_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
     except Exception as e:
         logger.error(f"Error in view_stats: {e}")
-        await update.message.reply_text("❌ Error retrieving statistics.")
+        await update.message.reply_text("❌ Kesalahan saat mengambil statistik.")
 
 @admin_only
 async def view_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """View message history."""
+    """View message history (admin only - can view global or specific user)."""
     try:
         if context.args:
             try:
                 target_user_id = int(context.args[0])
-                history = db.get_user_history(target_user_id, 10)
-                title = f"📝 History for User {target_user_id}:\n\n"
+                history = db.get_user_history(target_user_id, 10)  # Increased limit
+                if not history:
+                    await update.message.reply_text(f"📭 Tidak ada riwayat untuk Pengguna {target_user_id}.")
+                    return
+                title = f"📝 Riwayat Pesan Pengguna {target_user_id} ({len(history)} pesan):\n\n"
             except ValueError:
-                await update.message.reply_text("❌ Invalid user ID.")
+                await update.message.reply_text("❌ ID pengguna tidak valid. Gunakan: /history <user_id> atau /history untuk riwayat global.")
                 return
         else:
-            history = db.get_global_history(10)
-            title = "📝 Global Message History:\n\n"
-        
-        if not history:
-            await update.message.reply_text("📭 No history found.")
-            return
+            history = db.get_global_history(10)  # Increased limit for global history
+            if not history:
+                await update.message.reply_text("📭 Tidak ada riwayat global.")
+                return
+            title = f"📝 Riwayat Pesan Global ({len(history)} pesan terbaru):\n\n"
         
         message = title
-        for i, record in enumerate(history, 1):
-            timestamp = record.get('timestamp', 'Unknown time')
-            user_id = record.get('user_id', 'Unknown user')
-            message_text = record.get('message_text', 'No message')[:50]
-            response_text = record.get('response_text', 'No response')[:50]
+        for i, record in enumerate(reversed(history), 1):  # Show oldest first
+            timestamp = record.get('timestamp', 'Waktu tidak diketahui')
+            try:
+                if timestamp and timestamp != 'Waktu tidak diketahui':
+                    if isinstance(timestamp, str):
+                        # Handle ISO format timestamp
+                        try:
+                            dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+                            date_part = dt.strftime('%d/%m %H:%M')
+                        except:
+                            date_part = timestamp[:16] if len(timestamp) >= 16 else timestamp
+                    else:
+                        date_part = timestamp.strftime('%d/%m %H:%M')
+                else:
+                    date_part = 'Tidak diketahui'
+            except:
+                date_part = 'Tidak diketahui'
+            
+            user_id_display = record.get('user_id', 'Pengguna tidak diketahui')
+            message_text = record.get('message_text', 'Tidak ada pesan')
+            response_text = record.get('response_text', 'Tidak ada respon')
+            msg_type = record.get('message_type', 'text')
+            
+            # Clean and truncate text to avoid markdown parsing issues
+            if len(message_text) > 80:
+                message_text = message_text[:77] + "..."
+            if len(response_text) > 80:
+                response_text = response_text[:77] + "..."
+            
+            # Remove potentially problematic characters
+            message_text = message_text.replace('*', '').replace('_', '').replace('`', '').replace('[', '').replace(']', '').replace('(', '').replace(')', '')
+            response_text = response_text.replace('*', '').replace('_', '').replace('`', '').replace('[', '').replace(']', '').replace('(', '').replace(')', '')
+            
+            # Add type indicator
+            type_indicator = ""
+            if msg_type == 'image':
+                type_indicator = "📷 "
+            elif msg_type == 'ai':
+                type_indicator = "🤖 "
+            elif msg_type == 'normal':
+                type_indicator = "💬 "
             
             entry = (
-                f"{i}. 🕐 {timestamp}\n"
-                f"   👤 User {user_id}: {message_text}...\n"
-                f"   🤖 Bot: {response_text}...\n\n"
+                f"{i}. 🕐 {date_part}\n"
+                f"   👤 ID{user_id_display}: {type_indicator}{message_text}\n"
+                f"   🤖 Bot: {response_text}\n\n"
             )
             message += entry
         
+        # Send as plain text to avoid markdown parsing errors
         chunks = split_message(message, max_length=4000)
-        for chunk in chunks:
-            await update.message.reply_text(chunk, parse_mode='Markdown')
+        for i, chunk in enumerate(chunks):
+            if i == 0:
+                await update.message.reply_text(chunk)
+            else:
+                await update.message.reply_text(f"📝 Riwayat (lanjutan {i+1}):\n\n{chunk}")
             
     except Exception as e:
         logger.error(f"Error in view_history: {e}")
-        await update.message.reply_text("❌ Error retrieving message history.")
+        await update.message.reply_text("❌ Kesalahan saat mengambil riwayat pesan.")
 
 def main():
     """Main function to run the bot."""
@@ -657,9 +780,9 @@ def main():
     # Check if loading GIF exists
     if not os.path.exists(LOADING_GIF_PATH):
         logger.warning(f"Loading GIF not found at {LOADING_GIF_PATH}")
-        logger.info("Bot will use text loading indicator instead")
+        logger.info("Bot akan menggunakan indikator teks sebagai pengganti")
     else:
-        logger.info("Loading GIF found - will use animated loading indicator")
+        logger.info("Loading GIF ditemukan - akan menggunakan indikator animasi")
     
     db.set_admin(ADMIN_ID, True)
     
@@ -692,11 +815,11 @@ def main():
             if loaded_plugins:
                 logger.info(f"Loaded {len(loaded_plugins)} plugins: {', '.join(loaded_plugins)}")
             else:
-                logger.info("No plugins found or loaded")
+                logger.info("Tidak ada plugin yang ditemukan atau dimuat")
         except ImportError:
-            logger.warning("Plugin system not available - continuing without plugins")
+            logger.warning("Sistem plugin tidak tersedia - melanjutkan tanpa plugin")
         except Exception as e:
-            logger.error(f"Error loading plugins: {e}")
+            logger.error(f"Kesalahan saat memuat plugin: {e}")
     
     # Handle images (photos and image documents)
     application.add_handler(MessageHandler(filters.PHOTO, handle_image))
@@ -708,7 +831,7 @@ def main():
     # Handle regular text messages (not commands)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    logger.info("Bot started successfully!")
+    logger.info("Bot berhasil dimulai!")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':

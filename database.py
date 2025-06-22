@@ -311,11 +311,13 @@ class Database:
                     file_name = file_info.get('name', 'unknown')
                     full_message = f"[{file_type.upper()}] {file_name}: {message_text}"
                 
+                current_time = datetime.now().isoformat()
                 cursor.execute("""
                     INSERT INTO message_history (user_id, message_text, response_text, message_type, timestamp)
-                    VALUES (?, ?, ?, ?, datetime('now'))
-                """, (user_id, full_message, response_text, message_type))
+                    VALUES (?, ?, ?, ?, ?)
+                """, (user_id, full_message, response_text, message_type, current_time))
                 conn.commit()
+                logger.debug(f"Logged message for user {user_id}: {message_type}")
                 return True
         except Exception as e:
             logger.error(f"Error logging message: {e}")
@@ -334,12 +336,22 @@ class Database:
                     LIMIT ?
                 """, (user_id, limit))
                 
-                columns = [description[0] for description in cursor.description]
-                return [dict(zip(columns, row)) for row in cursor.fetchall()]
+                results = cursor.fetchall()
+                history = []
+                for row in results:
+                    history.append({
+                        'user_id': row[0],
+                        'message_text': row[1],
+                        'response_text': row[2],
+                        'message_type': row[3],
+                        'timestamp': row[4]
+                    })
+                return history
         except Exception as e:
+            logger.error(f"Error getting user history: {e}")
             return []
     
-    def get_global_history(self, limit: int = 10):
+    def get_global_history(self, limit: int = 20):
         """Get global message history."""
         try:
             with self.get_connection() as conn:
@@ -351,9 +363,19 @@ class Database:
                     LIMIT ?
                 """, (limit,))
                 
-                columns = [description[0] for description in cursor.description]
-                return [dict(zip(columns, row)) for row in cursor.fetchall()]
+                results = cursor.fetchall()
+                history = []
+                for row in results:
+                    history.append({
+                        'user_id': row[0],
+                        'message_text': row[1],
+                        'response_text': row[2],
+                        'message_type': row[3],
+                        'timestamp': row[4]
+                    })
+                return history
         except Exception as e:
+            logger.error(f"Error getting global history: {e}")
             return []
 
     def get_all_keywords(self) -> List[Dict]:
@@ -414,11 +436,12 @@ class Database:
                     file_name = file_info.get('name', 'unknown')
                     full_message = f"[{file_type.upper()}] {file_name}: {message_text}"
                 
-                # Add new message
+                # Add new message with current timestamp
+                current_time = datetime.now().isoformat()
                 cursor.execute("""
                     INSERT INTO conversation_context (user_id, message_text, response_text, timestamp)
-                    VALUES (?, ?, ?, datetime('now'))
-                """, (user_id, full_message, response_text))
+                    VALUES (?, ?, ?, ?)
+                """, (user_id, full_message, response_text, current_time))
                 
                 # Clean up old messages beyond limit
                 cursor.execute("""
@@ -432,6 +455,7 @@ class Database:
                 """, (user_id, user_id, max_context))
                 
                 conn.commit()
+                logger.debug(f"Added conversation message for user {user_id}: {full_message[:50]}...")
                 return True
         except Exception as e:
             logger.error(f"Error adding conversation message: {e}")
@@ -454,8 +478,17 @@ class Database:
                     LIMIT ?
                 """, (user_id, limit))
                 
-                columns = [description[0] for description in cursor.description]
-                return [dict(zip(columns, row)) for row in cursor.fetchall()]
+                results = cursor.fetchall()
+                conversations = []
+                
+                for row in results:
+                    conversations.append({
+                        'message_text': row[0],
+                        'response_text': row[1], 
+                        'timestamp': row[2]
+                    })
+                
+                return conversations
         except Exception as e:
             logger.error(f"Error getting conversation context: {e}")
             return []
@@ -517,6 +550,35 @@ class Database:
                 return bool(result[0]) if result else True  # Default enabled
         except Exception as e:
             return True
+
+    def get_conversation_history(self, user_id: int, limit: int = 10):
+        """Get conversation history for a user with limit."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT message_text, response_text, timestamp, 'conversation' as message_type
+                    FROM conversation_context 
+                    WHERE user_id = ? 
+                    ORDER BY timestamp DESC 
+                    LIMIT ?
+                """, (user_id, limit))
+                
+                results = cursor.fetchall()
+                conversations = []
+                for row in results:
+                    conversations.append({
+                        'message_text': row[0],
+                        'response_text': row[1],
+                        'timestamp': row[2],
+                        'message_type': row[3]
+                    })
+                
+                return conversations
+                
+        except Exception as e:
+            logger.error(f"Error getting conversation history: {e}")
+            return []
 
 # Global database instance
 db = Database()

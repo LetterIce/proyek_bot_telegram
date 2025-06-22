@@ -56,7 +56,8 @@ class AICore:
         self.api_key = GEMINI_API_KEY
         self.text_model = None
         self.vision_model = None
-        self._initialize_gemini()
+        self.model_name = "gemini-2.0-flash-exp"  # Default model name
+        self._initialize_models()
         
         # Intent patterns
         self.intent_patterns = {
@@ -118,19 +119,27 @@ class AICore:
             'arabic': "أجب باللغة العربية."
         }
     
-    def _initialize_gemini(self):
-        """Initialize Gemini models."""
+    def _initialize_models(self):
+        """Initialize AI models."""
         try:
             if not self.api_key or self.api_key == "your_gemini_api_key_here":
                 logger.error("Invalid or missing Gemini API key")
                 return
             
             genai.configure(api_key=self.api_key)
-            self.text_model = genai.GenerativeModel('gemini-2.5-pro')
-            self.vision_model = genai.GenerativeModel('gemini-2.5-pro')
-            logger.info("Gemini models initialized successfully")
+            
+            # Initialize text model
+            self.model_name = "gemini-2.5-pro"  # Set the actual model name
+            self.text_model = genai.GenerativeModel(self.model_name)
+            
+            # Initialize vision model (same model for both text and vision)
+            self.vision_model = self.text_model
+            
+            logger.info(f"AI models initialized successfully with model: {self.model_name}")
         except Exception as e:
             logger.error(f"Failed to initialize Gemini: {e}")
+            self.text_model = None
+            self.vision_model = None
     
     def detect_language(self, text: str) -> Tuple[str, float]:
         """Detect language of input text."""
