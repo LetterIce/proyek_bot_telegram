@@ -9,6 +9,9 @@ commands_for_all = [
     BotCommand("start", "▶️ Memulai bot"),
     BotCommand("register", "✍️ Mendaftar sebagai member"),
     BotCommand("help", "❓ Menampilkan bantuan"),
+    BotCommand("conversation", "⚙️ Pengaturan memori percakapan"),
+    BotCommand("clearconversation", "🗑️ Hapus riwayat percakapan"),
+    BotCommand("myhistory", "📜 Lihat riwayat percakapan Anda"),
 ]
 
 # Perintah tambahan khusus untuk admin

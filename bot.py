@@ -3,9 +3,9 @@ import os
 from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-from config import BOT_TOKEN, ADMIN_ID, PLUGINS_ENABLED, LOG_LEVEL, LOG_FILE, GEMINI_ENABLED, USE_GEMINI_FOR_UNKNOWN
+from config import BOT_TOKEN, ADMIN_ID, PLUGINS_ENABLED, LOG_LEVEL, LOG_FILE, GEMINI_ENABLED
 from database import db
-from gemini_client import gemini_client
+from ai_core import ai_core
 from utils import registered_only, admin_only, rate_limit, update_user_info, broadcast_message, format_user_info, split_message, is_admin, update_user_activity
 from image_utils import download_image, validate_and_process_image, get_image_info, is_image_file
 
@@ -65,76 +65,64 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db.increment_user_message_count(user_id)
         return
     
-    # Handle Gemini AI response for all other messages
-    if GEMINI_ENABLED and gemini_client.is_available():
-        loading_message = None
-        
-        try:
-            # Try to send loading GIF if it exists
-            if os.path.exists(LOADING_GIF_PATH):
-                with open(LOADING_GIF_PATH, 'rb') as gif_file:
-                    loading_message = await update.message.reply_animation(
-                        animation=gif_file,
-                        caption="💭 Sedang berpikir..."
-                    )
-            else:
-                loading_message = await update.message.reply_text("💭 Sedang memproses permintaan Anda...")
-        except Exception as e:
-            logger.warning(f"Failed to send loading indicator: {e}")
-            loading_message = await update.message.reply_text("🤔 Sedang berpikir...")
-        
-        # Check if this is user's first interaction
-        message_count = db.get_user_message_count(user_id)
-        is_first_interaction = message_count == 0
+    # Handle AI response
+    if GEMINI_ENABLED and ai_core.is_available():
+        loading_message = await send_loading_indicator(update, context)
         
         user_info = {
             'first_name': update.effective_user.first_name,
             'is_admin': is_admin(user_id),
-            'is_first_interaction': is_first_interaction
+            'is_first_interaction': db.get_user_message_count(user_id) == 0
         }
         
-        # Get conversation context if enabled for user
-        conversation_history = []
-        if db.is_context_enabled(user_id):
-            conversation_history = db.get_conversation_context(user_id)
+        conversation_history = db.get_conversation_context(user_id) if db.is_context_enabled(user_id) else []
+        ai_response = await ai_core.generate_response(text, user_info, conversation_history)
         
-        gemini_response = await gemini_client.generate_response(text, user_info, conversation_history)
+        await delete_loading_message(loading_message, context, update.effective_chat.id)
         
-        # Delete loading message
-        if loading_message:
-            try:
-                await context.bot.delete_message(
-                    chat_id=update.effective_chat.id, 
-                    message_id=loading_message.message_id
-                )
-            except Exception as e:
-                logger.warning(f"Failed to delete loading message: {e}")
-        
-        if gemini_response:
-            if len(gemini_response) > 10000:
-                gemini_response = gemini_response[:9970] + "..."
+        if ai_response:
+            if len(ai_response) > 10000:
+                ai_response = ai_response[:9970] + "..."
             
-            # Send response without robot emoji prefix
-            await update.message.reply_text(gemini_response)
-            db.log_message(user_id, text, gemini_response, 'gemini')
+            await update.message.reply_text(ai_response)
+            db.log_message(user_id, text, ai_response, 'ai')
             
-            # Add to conversation context if enabled
             if db.is_context_enabled(user_id):
-                db.add_conversation_message(user_id, text, gemini_response)
+                db.add_conversation_message(user_id, text, ai_response)
         else:
-            # Only show error if Gemini fails to respond
             error_response = "Maaf, terjadi kesalahan saat memproses permintaan Anda. Silakan coba lagi."
             await update.message.reply_text(error_response)
             db.log_message(user_id, text, error_response)
         
-        # Increment message count after successful interaction
         db.increment_user_message_count(user_id)
     else:
-        # Show message if Gemini is disabled or unavailable
         offline_response = "Fitur AI sedang tidak tersedia. Silakan coba lagi nanti."
         await update.message.reply_text(offline_response)
         db.log_message(user_id, text, offline_response)
         db.increment_user_message_count(user_id)
+
+async def send_loading_indicator(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Send loading indicator (GIF or text)."""
+    try:
+        if os.path.exists(LOADING_GIF_PATH):
+            with open(LOADING_GIF_PATH, 'rb') as gif_file:
+                return await update.message.reply_animation(
+                    animation=gif_file,
+                    caption="💭 Sedang berpikir..."
+                )
+        else:
+            return await update.message.reply_text("💭 Sedang memproses permintaan Anda...")
+    except Exception as e:
+        logger.warning(f"Failed to send loading indicator: {e}")
+        return await update.message.reply_text("🤔 Sedang berpikir...")
+
+async def delete_loading_message(loading_message, context: ContextTypes.DEFAULT_TYPE, chat_id: int):
+    """Delete loading message."""
+    if loading_message:
+        try:
+            await context.bot.delete_message(chat_id=chat_id, message_id=loading_message.message_id)
+        except Exception as e:
+            logger.warning(f"Failed to delete loading message: {e}")
 
 @rate_limit
 @registered_only
@@ -146,175 +134,100 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Processing image from user {user_id}")
     
     # Get image and caption
-    file_id = None
-    file_name = None
+    file_id, file_name = get_image_file_info(update.message)
+    if not file_id:
+        return
     
+    caption = update.message.caption or ""
+    
+    # Check if AI Vision is available
+    if not (GEMINI_ENABLED and ai_core.is_vision_available()):
+        offline_response = "Maaf, fitur analisis gambar sedang tidak tersedia. 📷❌"
+        await update.message.reply_text(offline_response)
+        file_info = {'type': 'image', 'name': file_name}
+        db.log_message(user_id, caption or "[Gambar tanpa caption]", offline_response, 'image', file_info)
+        return
+    
+    # Send loading indicator
+    loading_message = None
     try:
-        if update.message.photo:
-            # Get the largest photo
-            photo = update.message.photo[-1]
-            file_id = photo.file_id
-            file_name = f"photo_{photo.file_unique_id}.jpg"
-            logger.info(f"Processing photo: {file_id}")
-        elif update.message.document and is_image_file(update.message.document.file_name):
-            # Handle image sent as document
-            photo = update.message.document
-            file_id = photo.file_id
-            file_name = photo.file_name or "image.jpg"
-            logger.info(f"Processing document image: {file_id}, filename: {file_name}")
+        if os.path.exists(LOADING_GIF_PATH):
+            with open(LOADING_GIF_PATH, 'rb') as gif_file:
+                loading_message = await update.message.reply_animation(
+                    animation=gif_file,
+                    caption="👁️ Sedang menganalisis gambar..."
+                )
         else:
-            logger.warning("No valid image found in message")
-            return
+            loading_message = await update.message.reply_text("👁️ Sedang menganalisis gambar... 🔍")
+    except Exception as e:
+        logger.warning(f"Failed to send loading indicator: {e}")
+        loading_message = await update.message.reply_text("👁️ Menganalisis gambar...")
+    
+    # Process image
+    image_data = await download_image(context.bot, file_id)
+    if not image_data:
+        await handle_image_error(update, context, loading_message, "❌ Gagal mengunduh gambar. Pastikan gambar tidak terlalu besar dan coba lagi.", caption, file_name)
+        return
+    
+    processed_image = validate_and_process_image(image_data)
+    if not processed_image:
+        await handle_image_error(update, context, loading_message, "❌ Format gambar tidak didukung atau gambar rusak. Coba dengan gambar format JPG, PNG, atau GIF.", caption, file_name)
+        return
+    
+    # Analyze image
+    user_info = {
+        'first_name': update.effective_user.first_name,
+        'is_admin': is_admin(user_id),
+        'is_first_interaction': db.get_user_message_count(user_id) == 0
+    }
+    
+    analysis = await ai_core.analyze_image(processed_image, caption, user_info)
+    
+    await delete_loading_message(loading_message, context, update.effective_chat.id)
+    
+    if analysis:
+        if len(analysis) > 4000:
+            analysis = analysis[:3970] + "..."
         
-        caption = update.message.caption or ""
-        logger.info(f"Image caption: '{caption}'")
+        await update.message.reply_text(analysis)
         
-        # Check if Gemini Vision is available
-        if not (GEMINI_ENABLED and gemini_client.is_vision_available()):
-            offline_response = "Maaf, fitur analisis gambar sedang tidak tersedia. 📷❌"
-            await update.message.reply_text(offline_response)
-            
-            file_info = {'type': 'image', 'name': file_name}
-            db.log_message(user_id, caption or "[Gambar tanpa caption]", offline_response, 'image', file_info)
-            return
-        
-        # Send loading indicator
-        loading_message = None
-        try:
-            if os.path.exists(LOADING_GIF_PATH):
-                with open(LOADING_GIF_PATH, 'rb') as gif_file:
-                    loading_message = await update.message.reply_animation(
-                        animation=gif_file,
-                        caption="👁️ Sedang menganalisis gambar..."
-                    )
-            else:
-                loading_message = await update.message.reply_text("👁️ Sedang menganalisis gambar... 🔍")
-        except Exception as e:
-            logger.warning(f"Failed to send loading indicator: {e}")
-            loading_message = await update.message.reply_text("👁️ Menganalisis gambar...")
-        
-        # Download image
-        logger.info(f"Downloading image with file_id: {file_id}")
-        image_data = await download_image(context.bot, file_id)
-        if not image_data:
-            error_response = "❌ Gagal mengunduh gambar. Pastikan gambar tidak terlalu besar dan coba lagi."
-            await update.message.reply_text(error_response)
-            
-            # Delete loading message
-            if loading_message:
-                try:
-                    await context.bot.delete_message(
-                        chat_id=update.effective_chat.id,
-                        message_id=loading_message.message_id
-                    )
-                except:
-                    pass
-            
-            file_info = {'type': 'image', 'name': file_name}
-            db.log_message(user_id, caption or "[Gambar tanpa caption]", error_response, 'image', file_info)
-            return
-        
-        logger.info(f"Successfully downloaded image: {len(image_data)} bytes")
-        
-        # Validate and process image
-        processed_image = validate_and_process_image(image_data)
-        if not processed_image:
-            error_response = "❌ Format gambar tidak didukung atau gambar rusak. Coba dengan gambar format JPG, PNG, atau GIF."
-            await update.message.reply_text(error_response)
-            
-            # Delete loading message
-            if loading_message:
-                try:
-                    await context.bot.delete_message(
-                        chat_id=update.effective_chat.id,
-                        message_id=loading_message.message_id
-                    )
-                except:
-                    pass
-            
-            file_info = {'type': 'image', 'name': file_name}
-            db.log_message(user_id, caption or "[Gambar tanpa caption]", error_response, 'image', file_info)
-            return
-        
-        # Get image info for logging
         image_info = get_image_info(processed_image)
-        logger.info(f"Processing image: {file_name}, {image_info.get('width', 0)}x{image_info.get('height', 0)}")
-        
-        # Prepare user context
-        message_count = db.get_user_message_count(user_id)
-        is_first_interaction = message_count == 0
-        
-        user_info = {
-            'first_name': update.effective_user.first_name,
-            'is_admin': is_admin(user_id),
-            'is_first_interaction': is_first_interaction
+        file_info = {
+            'type': 'image',
+            'name': file_name,
+            'size': f"{image_info.get('width', 0)}x{image_info.get('height', 0)}"
         }
         
-        # Analyze image with Gemini Vision
-        logger.info("Starting image analysis with Gemini Vision...")
-        analysis = await gemini_client.analyze_image(processed_image, caption, user_info)
+        message_text = caption or "[Gambar tanpa caption]"
+        db.log_message(user_id, message_text, analysis, 'image', file_info)
         
-        # Delete loading message
-        if loading_message:
-            try:
-                await context.bot.delete_message(
-                    chat_id=update.effective_chat.id,
-                    message_id=loading_message.message_id
-                )
-            except Exception as e:
-                logger.warning(f"Failed to delete loading message: {e}")
-        
-        if analysis:
-            logger.info(f"Successfully analyzed image: {len(analysis)} characters")
-            
-            # Limit response length
-            if len(analysis) > 4000:
-                analysis = analysis[:3970] + "..."
-            
-            # Send analysis result
-            response_text = f"📸 **Analisis Gambar:**\n\n{analysis}"
-            await update.message.reply_text(response_text, parse_mode='Markdown')
-            
-            # Log message with file info
-            file_info = {
-                'type': 'image',
-                'name': file_name,
-                'size': f"{image_info.get('width', 0)}x{image_info.get('height', 0)}"
-            }
-            
-            message_text = caption or "[Gambar tanpa caption]"
-            db.log_message(user_id, message_text, analysis, 'image', file_info)
-            
-            # Add to conversation context if enabled
-            if db.is_context_enabled(user_id):
-                db.add_conversation_message(user_id, message_text, analysis, file_info)
-        else:
-            logger.error("Failed to get analysis from Gemini Vision")
-            error_response = "❌ Maaf, gagal menganalisis gambar. Coba lagi dalam beberapa saat."
-            await update.message.reply_text(error_response)
-            
-            file_info = {'type': 'image', 'name': file_name}
-            db.log_message(user_id, caption or "[Gambar tanpa caption]", error_response, 'image', file_info)
-        
-        # Increment message count
-        db.increment_user_message_count(user_id)
-        
-    except Exception as e:
-        logger.error(f"Error processing image: {e}")
-        import traceback
-        logger.error(f"Full traceback: {traceback.format_exc()}")
-        
-        if loading_message:
-            try:
-                await context.bot.delete_message(
-                    chat_id=update.effective_chat.id,
-                    message_id=loading_message.message_id
-                )
-            except:
-                pass
-        
-        error_response = "❌ Terjadi kesalahan saat menganalisis gambar. Silakan coba lagi."
+        if db.is_context_enabled(user_id):
+            db.add_conversation_message(user_id, message_text, analysis, file_info)
+    else:
+        error_response = "❌ Maaf, gagal menganalisis gambar. Coba lagi dalam beberapa saat."
         await update.message.reply_text(error_response)
+        file_info = {'type': 'image', 'name': file_name}
+        db.log_message(user_id, caption or "[Gambar tanpa caption]", error_response, 'image', file_info)
+    
+    db.increment_user_message_count(user_id)
+
+def get_image_file_info(message):
+    """Extract file ID and name from message."""
+    if message.photo:
+        photo = message.photo[-1]
+        return photo.file_id, f"photo_{photo.file_unique_id}.jpg"
+    elif message.document and is_image_file(message.document.file_name):
+        photo = message.document
+        return photo.file_id, photo.file_name or "image.jpg"
+    return None, None
+
+async def handle_image_error(update, context, loading_message, error_response, caption, file_name):
+    """Handle image processing errors."""
+    await update.message.reply_text(error_response)
+    await delete_loading_message(loading_message, context, update.effective_chat.id)
+    
+    file_info = {'type': 'image', 'name': file_name}
+    db.log_message(update.effective_user.id, caption or "[Gambar tanpa caption]", error_response, 'image', file_info)
 
 @registered_only
 async def handle_unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -619,28 +532,27 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(report, parse_mode='Markdown')
 
 @admin_only
-async def gemini_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Check Gemini status."""
-    status = "✅ Gemini 2.5 Pro: Online" if gemini_client.is_available() else "❌ Gemini 2.5 Pro: Offline"
-    config_status = f"🔧 Gemini Enabled: {'Yes' if GEMINI_ENABLED else 'No'}\n"
-    config_status += f"🎯 Auto Response: {'Yes' if USE_GEMINI_FOR_UNKNOWN else 'No'}"
+async def ai_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Check AI status."""
+    status = "✅ AI Core: Online" if ai_core.is_available() else "❌ AI Core: Offline"
+    vision_status = "✅ Vision: Online" if ai_core.is_vision_available() else "❌ Vision: Offline"
+    config_status = f"🔧 AI Enabled: {'Yes' if GEMINI_ENABLED else 'No'}"
     
-    await update.message.reply_text(f"{status}\n{config_status}")
+    await update.message.reply_text(f"{status}\n{vision_status}\n{config_status}")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show help message."""
     user_id = update.effective_user.id
     
     help_text = (
-        "**Bot Help**\n\n"
+        "**Bot Features:**\n"
+        "💬 Chat with AI - Send any text message\n"
+        "📷 Image Analysis - Send photos with or without captions\n"
+        "🗂️ Document Images - Send images as documents\n\n"
         "**General Commands:**\n"
         "/start - Start the bot\n"
         "/register - Register as member\n"
         "/help - Show this help\n\n"
-        "**Features:**\n"
-        "💬 Chat with AI - Send any text message\n"
-        "📷 Image Analysis - Send photos with or without captions\n"
-        "🗂️ Document Images - Send images as documents\n\n"
         "**Conversation Commands:**\n"
         "/conversation - Kelola pengaturan memori percakapan\n"
         "/clearconversation - Hapus riwayat percakapan\n"
@@ -661,7 +573,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         
         if GEMINI_ENABLED:
-            help_text += "/geministatus - Check Gemini status\n"
+            help_text += "/aistatus - Check AI status\n"
     
     await update.message.reply_text(help_text, parse_mode='Markdown')
 
@@ -759,7 +671,7 @@ def main():
     application.add_handler(CommandHandler("myhistory", show_conversation_history))
     
     if GEMINI_ENABLED:
-        application.add_handler(CommandHandler("geministatus", gemini_status))
+        application.add_handler(CommandHandler("aistatus", ai_status))
     
     # Load plugins if enabled
     if PLUGINS_ENABLED:

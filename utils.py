@@ -2,12 +2,12 @@ import asyncio
 import logging
 import functools
 from datetime import datetime, timedelta
-from typing import List, Callable
+from typing import Callable
 from telegram import Update, User
 from telegram.ext import ContextTypes
 from telegram.error import Forbidden, BadRequest
 from database import db
-from config import RATE_LIMIT_MESSAGES, RATE_LIMIT_WINDOW, ADMIN_ID, ADDITIONAL_ADMINS
+from config import RATE_LIMIT_MESSAGES, RATE_LIMIT_WINDOW, ADMIN_ID
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +47,7 @@ def rate_limit(func: Callable) -> Callable:
 
 def is_admin(user_id: int) -> bool:
     """Check if user is admin."""
-    return user_id == ADMIN_ID or user_id in ADDITIONAL_ADMINS or db.is_admin(user_id)
+    return user_id == ADMIN_ID or db.is_admin(user_id)
 
 def check_rate_limit(user_id: int) -> bool:
     """Check if user is within rate limit."""
@@ -95,13 +95,11 @@ def update_user_activity(user_id: int):
 async def broadcast_message(context: ContextTypes.DEFAULT_TYPE, message: str) -> dict:
     """Broadcast message to all registered users."""
     users = db.get_registered_users()
-    user_list = [user['user_id'] for user in users]
-    
     results = {'success': 0, 'failed': 0}
     
-    for user_id in user_list:
+    for user in users:
         try:
-            await context.bot.send_message(chat_id=user_id, text=message)
+            await context.bot.send_message(chat_id=user['user_id'], text=message)
             results['success'] += 1
         except (Forbidden, BadRequest):
             results['failed'] += 1

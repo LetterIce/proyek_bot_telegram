@@ -1,8 +1,7 @@
 import os
-from typing import List
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
+# Load environment variables
 load_dotenv()
 
 # Bot Configuration
@@ -18,22 +17,18 @@ if not ADMIN_ID:
 # Gemini Configuration
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 GEMINI_ENABLED = os.getenv('GEMINI_ENABLED', 'True').lower() == 'true'
-USE_GEMINI_FOR_UNKNOWN = os.getenv('USE_GEMINI_FOR_UNKNOWN', 'True').lower() == 'true'
 
 # Database Configuration
 DATABASE_PATH = os.path.join(os.path.dirname(__file__), 'bot_database.db')
-
-# Additional Admins (besides main admin)
-ADDITIONAL_ADMINS: List[int] = []
 
 # Bot Settings
 BOT_NAME = os.getenv("BOT_NAME", "Bot sangar")
 BOT_VERSION = "2.0.0"
 MAX_MESSAGE_LENGTH = 4096
-BROADCAST_DELAY = 0.5  # seconds between broadcast messages
+BROADCAST_DELAY = 0.5
 
 # Plugin Settings
-PLUGINS_ENABLED = os.getenv('PLUGINS_ENABLED', 'False').lower() == 'true'  # Changed to False by default
+PLUGINS_ENABLED = os.getenv('PLUGINS_ENABLED', 'False').lower() == 'true'
 PLUGIN_DIR = "plugins"
 
 # Logging Configuration
@@ -41,8 +36,8 @@ LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 LOG_FILE = "bot.log"
 
 # Rate Limiting
-RATE_LIMIT_MESSAGES = 1000  # messages per minute per user
-RATE_LIMIT_WINDOW = 10    # seconds
+RATE_LIMIT_MESSAGES = 1000
+RATE_LIMIT_WINDOW = 10
 
 # Feature Flags
 ENABLE_STATS = True
