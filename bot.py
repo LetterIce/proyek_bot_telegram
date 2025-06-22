@@ -535,7 +535,6 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def ai_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Check AI status."""
     status = "✅ AI Core: Online" if ai_core.is_available() else "❌ AI Core: Offline"
-    vision_status = "✅ Vision: Online" if ai_core.is_vision_available() else "❌ Vision: Offline"
     config_status = f"🔧 AI Enabled: {'Yes' if GEMINI_ENABLED else 'No'}"
     
     await update.message.reply_text(f"{status}\n{vision_status}\n{config_status}")

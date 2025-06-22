@@ -1,6 +1,6 @@
 import asyncio
 from telegram import Bot, BotCommand, BotCommandScopeAllPrivateChats, BotCommandScopeChat
-from config import BOT_TOKEN, ADMIN_ID
+from config import BOT_TOKEN, ADMIN_ID, GEMINI_ENABLED
 
 # --- DAFTAR PERINTAH ---
 
@@ -26,8 +26,11 @@ commands_for_admin = [
     BotCommand("addadmin", "👑 Tambah admin baru"),
     BotCommand("history", "📜 Lihat riwayat pesan"),
     BotCommand("stats", "📊 Lihat statistik bot"),
-    BotCommand("geministatus", "🧠 Cek status Gemini AI")
 ]
+
+# Add AI status command only if Gemini is enabled
+if GEMINI_ENABLED:
+    commands_for_admin.append(BotCommand("aistatus", "🧠 Cek status AI"))
 
 async def set_bot_commands():
     """
