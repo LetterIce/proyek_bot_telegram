@@ -11,8 +11,7 @@ __author__ = "@Yuand_aa"
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Display bot statistics."""
     stats = db.get_stats()
-    formatted_stats = format_stats(stats)
-    await update.message.reply_text(formatted_stats, parse_mode='Markdown')
+    await update.message.reply_text(format_stats(stats), parse_mode='Markdown')
 
 @admin_only
 async def user_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -29,14 +28,11 @@ async def user_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"No data found for user {user_id}")
             return
         
-        text = f"📊 **Stats for User {user_id}**\n\n"
-        text += f"Total messages: {len(history)}\n"
-        text += f"Last 5 messages:\n\n"
-        
-        for msg in history:
-            text += f"🕐 {msg['timestamp']}\n"
-            text += f"👤 {msg['message_text'][:50]}...\n"
-            text += f"🤖 {msg['response_text'][:50]}...\n\n"
+        text = f"📊 **Stats for User {user_id}**\n\nTotal messages: {len(history)}\nLast 5 messages:\n\n"
+        text += '\n'.join([
+            f"🕐 {msg['timestamp']}\n👤 {msg['message_text'][:50]}...\n🤖 {msg['response_text'][:50]}...\n"
+            for msg in history
+        ])
         
         await update.message.reply_text(text, parse_mode='Markdown')
     

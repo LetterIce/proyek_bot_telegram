@@ -145,13 +145,25 @@ async def broadcast_message(context: ContextTypes.DEFAULT_TYPE, message: str, us
 def format_user_info(user_data: dict) -> str:
     """Format user information for display."""
     user_id = user_data['user_id']
-    username = user_data.get('username', 'N/A')
-    first_name = user_data.get('first_name', 'N/A')
-    is_registered = "✅" if user_data.get('is_registered') else "❌"
-    is_admin = "👑" if user_data.get('is_admin') else ""
+    username = user_data.get('username')
+    first_name = user_data.get('first_name')
+    is_registered = user_data.get('is_registered')
+    is_admin_status = user_data.get('is_admin')
     message_count = user_data.get('message_count', 0)
     
-    return f"ID: `{user_id}` | @{username} | {first_name} | {is_registered} | {is_admin} | Pesan: {message_count}"
+    # Build display name
+    display_name = first_name or username or f"User {user_id}"
+    if username and first_name:
+        display_name += f" (@{username})"
+    elif username and not first_name:
+        display_name = f"@{username}"
+    
+    # Build status
+    status = ["✅ Terdaftar" if is_registered else "❌ Belum Terdaftar"]
+    if is_admin_status:
+        status.append("👑 Admin")
+    
+    return f"👤 {display_name}\n📋 ID: {user_id}\n📊 Status: {' | '.join(status)}\n💬 Pesan: {message_count}\n" + "─" * 30
 
 def format_stats(stats: dict) -> str:
     """Format bot statistics for display."""

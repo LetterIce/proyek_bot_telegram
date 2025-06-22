@@ -91,18 +91,14 @@ async def add_keyword(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     try:
-        parts = ' '.join(context.args).split('|', 1)
-        if len(parts) != 2:
-            raise ValueError("Format salah")
-        
-        keyword = parts[0].strip().lower()
-        response = parts[1].strip()
+        keyword, response = ' '.join(context.args).split('|', 1)
+        keyword, response = keyword.strip().lower(), response.strip()
         
         if db.add_keyword(keyword, response, update.effective_user.id):
             await update.message.reply_text(f"✅ Keyword '{keyword}' berhasil ditambahkan.")
         else:
             await update.message.reply_text(f"❌ Keyword '{keyword}' sudah ada.")
-    except (ValueError, IndexError):
+    except ValueError:
         await update.message.reply_text("❌ Format: /addkeyword <keyword> | <response>")
 
 @admin_only
@@ -113,10 +109,8 @@ async def delete_keyword(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     keyword = ' '.join(context.args).strip().lower()
-    if db.delete_keyword(keyword):
-        await update.message.reply_text(f"✅ Keyword '{keyword}' berhasil dihapus.")
-    else:
-        await update.message.reply_text(f"❌ Keyword '{keyword}' tidak ditemukan.")
+    success_msg = f"✅ Keyword '{keyword}' berhasil dihapus." if db.delete_keyword(keyword) else f"❌ Keyword '{keyword}' tidak ditemukan."
+    await update.message.reply_text(success_msg)
 
 @admin_only
 async def list_members(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -216,16 +210,12 @@ async def view_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("No history found.")
         return
     
-    message = title
-    for record in history:
-        message += (
-            f"🕐 {record['timestamp']}\n"
-            f"👤 User {record['user_id']}: {record['message_text'][:50]}...\n"
-            f"🤖 Bot: {record['response_text'][:50]}...\n\n"
-        )
+    message = title + '\n'.join([
+        f"🕐 {record['timestamp']}\n👤 User {record['user_id']}: {record['message_text'][:50]}...\n🤖 Bot: {record['response_text'][:50]}...\n"
+        for record in history
+    ])
     
-    chunks = split_message(message)
-    for chunk in chunks:
+    for chunk in split_message(message):
         await update.message.reply_text(chunk, parse_mode='Markdown')
 
 def main():
