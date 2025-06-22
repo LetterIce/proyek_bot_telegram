@@ -1,15 +1,24 @@
 import os
 from typing import List
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Bot Configuration
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID"))
+ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
 
 # Validate required environment variables
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN environment variable is required")
 if not ADMIN_ID:
     raise ValueError("ADMIN_ID environment variable is required")
+
+# Gemini Configuration
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
+GEMINI_ENABLED = os.getenv('GEMINI_ENABLED', 'True').lower() == 'true'
+USE_GEMINI_FOR_UNKNOWN = os.getenv('USE_GEMINI_FOR_UNKNOWN', 'True').lower() == 'true'
 
 # Database Configuration
 DATABASE_PATH = os.path.join(os.path.dirname(__file__), 'bot_database.db')
@@ -24,7 +33,7 @@ MAX_MESSAGE_LENGTH = 4096
 BROADCAST_DELAY = 0.5  # seconds between broadcast messages
 
 # Plugin Settings
-PLUGINS_ENABLED = True
+PLUGINS_ENABLED = os.getenv('PLUGINS_ENABLED', 'False').lower() == 'true'  # Changed to False by default
 PLUGIN_DIR = "plugins"
 
 # Logging Configuration

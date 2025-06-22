@@ -2,7 +2,7 @@ import asyncio
 import logging
 import functools
 from datetime import datetime, timedelta
-from typing import List, Callable, Any
+from typing import List, Callable
 from telegram import Update, User
 from telegram.ext import ContextTypes
 from telegram.error import Forbidden, BadRequest
@@ -39,20 +39,14 @@ def rate_limit(func: Callable) -> Callable:
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
         user_id = update.effective_user.id
         
-        # Skip rate limiting for admins
-        if is_admin(user_id):
+        if is_admin(user_id) or check_rate_limit(user_id):
             return await func(update, context, *args, **kwargs)
         
-        # Check rate limit
-        if not check_rate_limit(user_id):
-            await update.message.reply_text("⚠️ Anda mengirim pesan terlalu cepat. Silakan tunggu sebentar.")
-            return
-        
-        return await func(update, context, *args, **kwargs)
+        await update.message.reply_text("⚠️ Anda mengirim pesan terlalu cepat. Silakan tunggu sebentar.")
     return wrapper
 
 def is_admin(user_id: int) -> bool:
-    """Check if user is admin (including main admin and additional admins)."""
+    """Check if user is admin."""
     return user_id == ADMIN_ID or user_id in ADDITIONAL_ADMINS or db.is_admin(user_id)
 
 def check_rate_limit(user_id: int) -> bool:
@@ -66,7 +60,6 @@ def check_rate_limit(user_id: int) -> bool:
         result = cursor.fetchone()
         
         if not result:
-            # First message from user
             cursor.execute("INSERT INTO rate_limits (user_id, message_count, window_start) VALUES (?, 1, ?)", 
                          (user_id, now))
             conn.commit()
@@ -76,7 +69,6 @@ def check_rate_limit(user_id: int) -> bool:
         stored_window_start = datetime.fromisoformat(stored_window_start)
         
         if stored_window_start < window_start:
-            # Reset window
             cursor.execute("UPDATE rate_limits SET message_count = 1, window_start = ? WHERE user_id = ?", 
                          (now, user_id))
             conn.commit()
@@ -85,65 +77,36 @@ def check_rate_limit(user_id: int) -> bool:
         if message_count >= RATE_LIMIT_MESSAGES:
             return False
         
-        # Increment message count
         cursor.execute("UPDATE rate_limits SET message_count = message_count + 1 WHERE user_id = ?", (user_id,))
         conn.commit()
         return True
 
 def update_user_info(user: User):
-    """Update user information in database without affecting registration status."""
-    # Use the new method that preserves existing user data
-    db.add_user(
-        user_id=user.id,
-        username=user.username,
-        first_name=user.first_name,
-        last_name=user.last_name
-    )
+    """Update user information in database."""
+    db.add_user(user.id, user.username, user.first_name, user.last_name)
 
 def update_user_activity(user_id: int):
     """Update user's last activity timestamp."""
-    db.update_user_activity(user_id)
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE users SET last_seen = datetime('now') WHERE user_id = ?", (user_id,))
+        conn.commit()
 
-async def safe_send_message(context: ContextTypes.DEFAULT_TYPE, chat_id: int, text: str, **kwargs) -> bool:
-    """Safely send message with error handling."""
-    try:
-        await context.bot.send_message(chat_id=chat_id, text=text, **kwargs)
-        return True
-    except Forbidden:
-        logger.warning(f"Cannot send message to {chat_id}: User blocked the bot")
-        return False
-    except BadRequest as e:
-        logger.warning(f"Cannot send message to {chat_id}: {e}")
-        return False
-    except Exception as e:
-        logger.error(f"Unexpected error sending message to {chat_id}: {e}")
-        return False
-
-async def broadcast_message(context: ContextTypes.DEFAULT_TYPE, message: str, user_list: List[int] = None, 
-                          delay: float = 0.5) -> dict:
-    """Broadcast message to multiple users with detailed results."""
-    if user_list is None:
-        users = db.get_registered_users()
-        user_list = [user['user_id'] for user in users]
+async def broadcast_message(context: ContextTypes.DEFAULT_TYPE, message: str) -> dict:
+    """Broadcast message to all registered users."""
+    users = db.get_registered_users()
+    user_list = [user['user_id'] for user in users]
     
-    results = {
-        'success': 0,
-        'failed': 0,
-        'blocked': 0,
-        'not_found': 0,
-        'failed_users': []
-    }
+    results = {'success': 0, 'failed': 0}
     
     for user_id in user_list:
-        success = await safe_send_message(context, user_id, message)
-        if success:
+        try:
+            await context.bot.send_message(chat_id=user_id, text=message)
             results['success'] += 1
-        else:
+        except (Forbidden, BadRequest):
             results['failed'] += 1
-            results['failed_users'].append(user_id)
         
-        if delay > 0:
-            await asyncio.sleep(delay)
+        await asyncio.sleep(0.5)
     
     return results
 
@@ -154,38 +117,16 @@ def format_user_info(user_data: dict) -> str:
     first_name = user_data.get('first_name')
     is_registered = user_data.get('is_registered')
     is_admin_status = user_data.get('is_admin')
-    message_count = user_data.get('message_count', 0)
     
-    # Build display name
     display_name = first_name or username or f"User {user_id}"
     if username and first_name:
         display_name += f" (@{username})"
-    elif username and not first_name:
-        display_name = f"@{username}"
     
-    # Build status
     status = ["✅ Terdaftar" if is_registered else "❌ Belum Terdaftar"]
     if is_admin_status:
         status.append("👑 Admin")
     
-    return f"👤 {display_name}\n📋 ID: {user_id}\n📊 Status: {' | '.join(status)}\n💬 Pesan: {message_count}\n" + "─" * 30
-
-def format_stats(stats: dict) -> str:
-    """Format bot statistics for display."""
-    text = "📊 **Statistik Bot**\n\n"
-    text += f"👥 Total Users: {stats.get('total_users', 0)}\n"
-    text += f"✅ Registered Users: {stats.get('registered_users', 0)}\n"
-    text += f"👑 Admin Users: {stats.get('admin_users', 0)}\n"
-    text += f"💬 Total Messages: {stats.get('total_messages', 0)}\n"
-    text += f"🔤 Active Keywords: {stats.get('active_keywords', 0)}\n\n"
-    
-    top_keywords = stats.get('top_keywords', [])
-    if top_keywords:
-        text += "🔥 **Top Keywords:**\n"
-        for keyword, usage in top_keywords:
-            text += f"• `{keyword}`: {usage}x\n"
-    
-    return text
+    return f"👤 {display_name}\n📋 ID: {user_id}\n📊 Status: {' | '.join(status)}\n" + "─" * 30
 
 def split_message(text, max_length=4096):
     """Split long messages into chunks."""
@@ -195,29 +136,15 @@ def split_message(text, max_length=4096):
     chunks = []
     current_chunk = ""
     
-    lines = text.split('\n')
-    for line in lines:
+    for line in text.split('\n'):
         if len(current_chunk) + len(line) + 1 <= max_length:
             current_chunk += line + '\n'
         else:
             if current_chunk:
                 chunks.append(current_chunk.rstrip())
-                current_chunk = line + '\n'
-            else:
-                # Line is too long, split it
-                while len(line) > max_length:
-                    chunks.append(line[:max_length])
-                    line = line[max_length:]
-                current_chunk = line + '\n' if line else ""
+            current_chunk = line + '\n'
     
     if current_chunk:
         chunks.append(current_chunk.rstrip())
     
     return chunks
-
-def escape_markdown(text: str) -> str:
-    """Escape markdown special characters."""
-    special_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
-    for char in special_chars:
-        text = text.replace(char, f'\\{char}')
-    return text

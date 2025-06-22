@@ -1,37 +1,35 @@
 import logging
-import asyncio
+import os
 from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-from config import BOT_TOKEN, ADMIN_ID, PLUGINS_ENABLED, LOG_LEVEL, LOG_FILE
+from config import BOT_TOKEN, ADMIN_ID, PLUGINS_ENABLED, LOG_LEVEL, LOG_FILE, GEMINI_ENABLED, USE_GEMINI_FOR_UNKNOWN
 from database import db
-from utils import (
-    registered_only, admin_only, rate_limit, update_user_info, 
-    broadcast_message, format_user_info, split_message, is_admin
-)
+from gemini_client import gemini_client
+from utils import registered_only, admin_only, rate_limit, update_user_info, broadcast_message, format_user_info, split_message, is_admin, update_user_activity
 
 # Setup logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=getattr(logging, LOG_LEVEL),
-    handlers=[
-        logging.FileHandler(LOG_FILE),
-        logging.StreamHandler()
-    ]
+    handlers=[logging.FileHandler(LOG_FILE), logging.StreamHandler()]
 )
 logger = logging.getLogger(__name__)
 
-# Command Handlers
+# Add path for media files
+MEDIA_DIR = os.path.join(os.path.dirname(__file__), 'media')
+LOADING_GIF_PATH = os.path.join(MEDIA_DIR, 'loading.gif')
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /start command."""
     user = update.effective_user
     update_user_info(user)
     
     welcome_text = (
-        f"🤖 Selamat datang {user.first_name}!\n\n"
-        "Saya adalah bot canggih dengan fitur-fitur menarik.\n"
-        "Ketik /register untuk mendaftar dan menggunakan semua fitur.\n"
-        "Ketik /help untuk melihat daftar perintah."
+        f"👋 Halo, {user.first_name}! Senang bertemu dengan Anda.\n\n"
+        "Saya adalah bot AI yang siap menjadi teman diskusi Anda.\n"
+        "Anda bisa bertanya apa saja, mulai dari hal ringan hingga topik yang kompleks.\n"
+        "Mau coba? Tanyakan sesuatu pada saya!"
     )
     
     await update.message.reply_text(welcome_text)
@@ -44,10 +42,8 @@ async def register(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("✅ Anda sudah terdaftar!")
         return
     
-    success = db.register_user(user_id)
-    if success:
+    if db.register_user(user_id):
         await update.message.reply_text("🎉 Pendaftaran berhasil! Anda sekarang bisa menggunakan semua fitur bot.")
-        db.update_stat('total_registrations', str(len(db.get_registered_users())))
     else:
         await update.message.reply_text("❌ Gagal mendaftar. Silakan coba lagi.")
 
@@ -57,30 +53,90 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle regular text messages."""
     user_id = update.effective_user.id
     text = update.message.text.strip()
-    original_text = text
-    text_lower = text.lower()
-    
-    # Update user activity (this won't affect registration status)
-    from utils import update_user_activity
     update_user_activity(user_id)
     
-    # Log the incoming message
-    logger.info(f"User {user_id} sent message: {text[:50]}...")
-    
-    # Get keyword response
-    response = db.get_keyword_response(text_lower)
+    # Check for keyword response first
+    response = db.get_keyword_response(text.lower())
     
     if response:
         await update.message.reply_text(response)
-        # Log successful message interaction
-        log_success = db.log_message(user_id, original_text, response)
-        logger.info(f"Keyword response logged: {log_success}")
+        db.log_message(user_id, text, response)
+        db.increment_user_message_count(user_id)
+        return
+    
+    # Handle Gemini AI response for all other messages
+    if GEMINI_ENABLED and gemini_client.is_available():
+        loading_message = None
+        
+        try:
+            # Try to send loading GIF if it exists
+            if os.path.exists(LOADING_GIF_PATH):
+                with open(LOADING_GIF_PATH, 'rb') as gif_file:
+                    loading_message = await update.message.reply_animation(
+                        animation=gif_file,
+                        caption="💭 Sedang berpikir..."
+                    )
+            else:
+                loading_message = await update.message.reply_text("💭 Sedang memproses permintaan Anda...")
+        except Exception as e:
+            logger.warning(f"Failed to send loading indicator: {e}")
+            loading_message = await update.message.reply_text("🤔 Sedang berpikir...")
+        
+        # Check if this is user's first interaction
+        message_count = db.get_user_message_count(user_id)
+        is_first_interaction = message_count == 0
+        
+        user_info = {
+            'first_name': update.effective_user.first_name,
+            'is_admin': is_admin(user_id),
+            'is_first_interaction': is_first_interaction
+        }
+        
+        gemini_response = await gemini_client.generate_response(text, user_info)
+        
+        # Delete loading message
+        if loading_message:
+            try:
+                await context.bot.delete_message(
+                    chat_id=update.effective_chat.id, 
+                    message_id=loading_message.message_id
+                )
+            except Exception as e:
+                logger.warning(f"Failed to delete loading message: {e}")
+        
+        if gemini_response:
+            if len(gemini_response) > 10000:
+                gemini_response = gemini_response[:9970] + "..."
+            
+            # Send response without robot emoji prefix
+            await update.message.reply_text(gemini_response)
+            db.log_message(user_id, text, gemini_response, 'gemini')
+        else:
+            # Only show error if Gemini fails to respond
+            error_response = "Maaf, terjadi kesalahan saat memproses permintaan Anda. Silakan coba lagi."
+            await update.message.reply_text(error_response)
+            db.log_message(user_id, text, error_response)
+        
+        # Increment message count after successful interaction
+        db.increment_user_message_count(user_id)
     else:
-        default_response = "🤔 Maaf, saya tidak mengerti perintah itu. Ketik /help untuk bantuan."
-        await update.message.reply_text(default_response)
-        # Log default response
-        log_success = db.log_message(user_id, original_text, default_response)
-        logger.info(f"Default response logged: {log_success}")
+        # Show message if Gemini is disabled or unavailable
+        offline_response = "Fitur AI sedang tidak tersedia. Silakan coba lagi nanti."
+        await update.message.reply_text(offline_response)
+        db.log_message(user_id, text, offline_response)
+        db.increment_user_message_count(user_id)
+
+@registered_only
+async def handle_unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle unknown commands (messages starting with /)."""
+    user_id = update.effective_user.id
+    text = update.message.text.strip()
+    update_user_activity(user_id)
+    
+    # Response specifically for invalid commands
+    command_response = "Maaf, saya tidak mengerti perintah itu. Ketik /help untuk bantuan."
+    await update.message.reply_text(command_response)
+    db.log_message(user_id, text, command_response)
 
 @admin_only
 async def add_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -100,30 +156,116 @@ async def add_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def add_keyword(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Add new keyword."""
     if not context.args:
-        await update.message.reply_text("Usage: /addkeyword <keyword> | <response>")
+        await update.message.reply_text("❌ Format: `/addkeyword <keyword> | <response>`\n\nContoh:\n`/addkeyword halo | Halo! Selamat datang di bot ini!`", parse_mode='Markdown')
         return
     
     try:
-        keyword, response = ' '.join(context.args).split('|', 1)
-        keyword, response = keyword.strip().lower(), response.strip()
+        full_text = ' '.join(context.args)
+        
+        if '|' not in full_text:
+            await update.message.reply_text("❌ Format salah! Gunakan:\n`/addkeyword <keyword> | <response>`\n\nContoh:\n`/addkeyword halo | Halo! Selamat datang!`", parse_mode='Markdown')
+            return
+        
+        parts = full_text.split('|', 1)
+        keyword = parts[0].strip().lower()
+        response = parts[1].strip()
+        
+        if not keyword or not response:
+            await update.message.reply_text("❌ Keyword dan response tidak boleh kosong!")
+            return
+        
+        if len(keyword) > 100:
+            await update.message.reply_text("❌ Keyword terlalu panjang! Maksimal 100 karakter.")
+            return
+        
+        if len(response) > 2000:
+            await update.message.reply_text("❌ Response terlalu panjang! Maksimal 2000 karakter.")
+            return
+        
+        logger.info(f"Admin {update.effective_user.id} attempting to add keyword: '{keyword}'")
         
         if db.add_keyword(keyword, response, update.effective_user.id):
-            await update.message.reply_text(f"✅ Keyword '{keyword}' berhasil ditambahkan.")
+            await update.message.reply_text(f"✅ Keyword `{keyword}` berhasil ditambahkan!", parse_mode='Markdown')
+            logger.info(f"Keyword '{keyword}' added successfully")
         else:
-            await update.message.reply_text(f"❌ Keyword '{keyword}' sudah ada.")
-    except ValueError:
-        await update.message.reply_text("❌ Format: /addkeyword <keyword> | <response>")
+            await update.message.reply_text(f"❌ Keyword `{keyword}` sudah ada! Gunakan keyword yang berbeda.", parse_mode='Markdown')
+            
+    except Exception as e:
+        logger.error(f"Error in add_keyword: {e}")
+        await update.message.reply_text("❌ Terjadi kesalahan saat menambahkan keyword. Silakan coba lagi.")
 
 @admin_only
 async def delete_keyword(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Delete keyword."""
     if not context.args:
-        await update.message.reply_text("Usage: /delkeyword <keyword>")
+        await update.message.reply_text("❌ Format: `/delkeyword <keyword>`\n\nContoh:\n`/delkeyword halo`", parse_mode='Markdown')
         return
     
-    keyword = ' '.join(context.args).strip().lower()
-    success_msg = f"✅ Keyword '{keyword}' berhasil dihapus." if db.delete_keyword(keyword) else f"❌ Keyword '{keyword}' tidak ditemukan."
-    await update.message.reply_text(success_msg)
+    try:
+        keyword = ' '.join(context.args).strip().lower()
+        
+        if not keyword:
+            await update.message.reply_text("❌ Keyword tidak boleh kosong!")
+            return
+        
+        logger.info(f"Admin {update.effective_user.id} attempting to delete keyword: '{keyword}'")
+        
+        if db.delete_keyword(keyword):
+            await update.message.reply_text(f"✅ Keyword `{keyword}` berhasil dihapus!", parse_mode='Markdown')
+            logger.info(f"Keyword '{keyword}' deleted successfully")
+        else:
+            await update.message.reply_text(f"❌ Keyword `{keyword}` tidak ditemukan!", parse_mode='Markdown')
+            
+    except Exception as e:
+        logger.error(f"Error in delete_keyword: {e}")
+        await update.message.reply_text("❌ Terjadi kesalahan saat menghapus keyword. Silakan coba lagi.")
+
+@admin_only
+async def list_keywords(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """List all keywords."""
+    try:
+        logger.info(f"Admin {update.effective_user.id} requesting keyword list")
+        keywords = db.get_all_keywords()
+        
+        if not keywords:
+            await update.message.reply_text("❌ Belum ada keyword yang tersedia.\n\nGunakan `/addkeyword <keyword> | <response>` untuk menambahkan keyword baru.", parse_mode='Markdown')
+            return
+        
+        message = f"📝 **Daftar Keywords** ({len(keywords)} total):\n\n"
+        
+        for i, keyword_data in enumerate(keywords, 1):
+            keyword = keyword_data.get('keyword', 'Unknown')
+            response = keyword_data.get('response', 'No response')
+            usage_count = keyword_data.get('usage_count', 0)
+            created_at = keyword_data.get('created_at', 'Unknown')
+            
+            display_response = response[:80] + "..." if len(response) > 80 else response
+            
+            if created_at and created_at != 'Unknown':
+                try:
+                    date_part = created_at[:10]
+                except:
+                    date_part = 'Unknown'
+            else:
+                date_part = 'Unknown'
+            
+            entry = (
+                f"{i}. **{keyword}**\n"
+                f"   📝 Response: {display_response}\n"
+                f"   📊 Used: {usage_count}x\n"
+                f"   📅 Created: {date_part}\n\n"
+            )
+            message += entry
+        
+        chunks = split_message(message, max_length=4000)
+        for chunk in chunks:
+            await update.message.reply_text(chunk, parse_mode='Markdown')
+            
+        logger.info(f"Successfully sent keyword list with {len(keywords)} keywords")
+        
+    except Exception as e:
+        logger.error(f"Error in list_keywords: {e}")
+        await update.message.reply_text("❌ Terjadi kesalahan saat mengambil daftar keyword. Silakan coba lagi.")
 
 @admin_only
 async def list_members(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -138,7 +280,6 @@ async def list_members(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for user in users:
         message += format_user_info(user) + "\n"
     
-    # Split long messages
     chunks = split_message(message)
     for chunk in chunks:
         await update.message.reply_text(chunk, parse_mode='Markdown')
@@ -168,21 +309,22 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     
     await update.message.reply_text(report, parse_mode='Markdown')
+
+@admin_only
+async def gemini_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Check Gemini status."""
+    status = "✅ Gemini 2.5 Pro: Online" if gemini_client.is_available() else "❌ Gemini 2.5 Pro: Offline"
+    config_status = f"🔧 Gemini Enabled: {'Yes' if GEMINI_ENABLED else 'No'}\n"
+    config_status += f"🎯 Auto Response: {'Yes' if USE_GEMINI_FOR_UNKNOWN else 'No'}"
     
-    # Log broadcast
-    db.log_message(
-        update.effective_user.id,
-        f"[BROADCAST] {message_to_send}",
-        f"Success: {results['success']}, Failed: {results['failed']}",
-        'broadcast'
-    )
+    await update.message.reply_text(f"{status}\n{config_status}")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show help message."""
     user_id = update.effective_user.id
     
     help_text = (
-        "🤖 **Bot Help**\n\n"
+        "**Bot Help**\n\n"
         "**General Commands:**\n"
         "/start - Start the bot\n"
         "/register - Register as member\n"
@@ -190,18 +332,20 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     
     if is_admin(user_id):
-        admin_help = (
+        help_text += (
             "**Admin Commands:**\n"
             "/addkeyword `<keyword> | <response>` - Add keyword\n"
             "/delkeyword `<keyword>` - Delete keyword\n"
+            "/listkeyword - List all keywords\n"
             "/listmembers - List all users\n"
             "/addadmin `<user_id>` - Add admin\n"
             "/broadcast `<message>` - Broadcast message\n"
             "/history [user_id] - View message history\n"
             "/stats - View bot statistics\n"
-            "/debug - Debug message history\n"
         )
-        help_text += admin_help
+        
+        if GEMINI_ENABLED:
+            help_text += "/geministatus - Check Gemini status\n"
     
     await update.message.reply_text(help_text, parse_mode='Markdown')
 
@@ -209,7 +353,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def view_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """View bot statistics."""
     try:
-        stats = db.get_all_stats()
         users = db.get_all_users()
         registered_users = db.get_registered_users()
         
@@ -217,14 +360,12 @@ async def view_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📊 **Bot Statistics:**\n\n"
             f"👥 Total Users: {len(users)}\n"
             f"✅ Registered Users: {len(registered_users)}\n"
-            f"🔧 Total Registrations: {stats.get('total_registrations', '0')}\n"
-            f"📝 Total Messages: {stats.get('total_messages', '0')}\n"
             f"🚀 Bot Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         )
         
         await update.message.reply_text(stats_text, parse_mode='Markdown')
     except Exception as e:
-        logger.error(f"Error getting stats: {e}")
+        logger.error(f"Error in view_stats: {e}")
         await update.message.reply_text("❌ Error retrieving statistics.")
 
 @admin_only
@@ -237,7 +378,7 @@ async def view_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 history = db.get_user_history(target_user_id, 10)
                 title = f"📝 History for User {target_user_id}:\n\n"
             except ValueError:
-                await update.message.reply_text("❌ Invalid user ID. Please provide a numeric user ID.")
+                await update.message.reply_text("❌ Invalid user ID.")
                 return
         else:
             history = db.get_global_history(10)
@@ -249,105 +390,41 @@ async def view_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         message = title
         for i, record in enumerate(history, 1):
-            # Safely get values with defaults
             timestamp = record.get('timestamp', 'Unknown time')
             user_id = record.get('user_id', 'Unknown user')
-            message_text = record.get('message_text', 'No message')[:100]
-            response_text = record.get('response_text', 'No response')[:100]
-            
-            # Clean up the message text for safe display
-            message_text = message_text.replace('*', '\\*').replace('_', '\\_').replace('`', '\\`')
-            response_text = response_text.replace('*', '\\*').replace('_', '\\_').replace('`', '\\`')
+            message_text = record.get('message_text', 'No message')[:50]
+            response_text = record.get('response_text', 'No response')[:50]
             
             entry = (
                 f"{i}. 🕐 {timestamp}\n"
-                f"   👤 User {user_id}: {message_text}\n"
-                f"   🤖 Bot: {response_text}\n\n"
+                f"   👤 User {user_id}: {message_text}...\n"
+                f"   🤖 Bot: {response_text}...\n\n"
             )
             message += entry
         
-        # Split and send message chunks
         chunks = split_message(message, max_length=4000)
         for chunk in chunks:
             await update.message.reply_text(chunk, parse_mode='Markdown')
             
     except Exception as e:
-        logger.error(f"Error getting history: {e}")
+        logger.error(f"Error in view_history: {e}")
         await update.message.reply_text("❌ Error retrieving message history.")
-
-@admin_only
-async def debug_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Debug command to check message history table."""
-    try:
-        # Check if message_history table exists and has data
-        with db.get_connection() as conn:
-            cursor = conn.cursor()
-            
-            # Check table structure
-            cursor.execute("PRAGMA table_info(message_history)")
-            table_info = cursor.fetchall()
-            
-            # Count total records
-            cursor.execute("SELECT COUNT(*) FROM message_history")
-            total_records = cursor.fetchone()[0]
-            
-            # Get recent records with more details
-            cursor.execute("""
-                SELECT id, user_id, message_text, response_text, timestamp 
-                FROM message_history 
-                ORDER BY timestamp DESC 
-                LIMIT 5
-            """)
-            recent_records = cursor.fetchall()
-            
-            debug_text = f"🔍 **Debug History:**\n\n"
-            debug_text += f"📊 Total records: {total_records}\n"
-            debug_text += f"📋 Table columns: {len(table_info)}\n\n"
-            
-            if table_info:
-                debug_text += "🏗️ **Table Structure:**\n"
-                for col in table_info:
-                    debug_text += f"• {col[1]} ({col[2]})\n"
-                debug_text += "\n"
-            
-            if recent_records:
-                debug_text += "📝 **Recent Records:**\n"
-                for record in recent_records:
-                    debug_text += f"• ID: {record[0]}\n"
-                    debug_text += f"  User: {record[1]}\n"
-                    debug_text += f"  Message: {record[2][:30]}...\n"
-                    debug_text += f"  Response: {record[3][:30]}...\n"
-                    debug_text += f"  Time: {record[4]}\n\n"
-            else:
-                debug_text += "❌ No records found in message_history table\n"
-            
-            # Also check if there are any users
-            cursor.execute("SELECT COUNT(*) FROM users")
-            user_count = cursor.fetchone()[0]
-            debug_text += f"👥 Total users in database: {user_count}\n"
-            
-            await update.message.reply_text(debug_text, parse_mode='Markdown')
-            
-    except Exception as e:
-        logger.error(f"Debug history error: {e}")
-        await update.message.reply_text(f"❌ Debug error: {str(e)}")
 
 def main():
     """Main function to run the bot."""
-    # Initialize admin in database
+    # Create media directory if it doesn't exist
+    os.makedirs(MEDIA_DIR, exist_ok=True)
+    
+    # Check if loading GIF exists
+    if not os.path.exists(LOADING_GIF_PATH):
+        logger.warning(f"Loading GIF not found at {LOADING_GIF_PATH}")
+        logger.info("Bot will use text loading indicator instead")
+    else:
+        logger.info("Loading GIF found - will use animated loading indicator")
+    
     db.set_admin(ADMIN_ID, True)
     
-    # Create application
     application = Application.builder().token(BOT_TOKEN).build()
-    
-    # Load plugins if enabled
-    if PLUGINS_ENABLED:
-        try:
-            from plugins import plugin_manager
-            loaded_plugins = plugin_manager.load_plugins(application)
-            logger.info(f"Loaded {len(loaded_plugins)} plugins: {', '.join(loaded_plugins)}")
-        except Exception as e:
-            logger.error(f"Failed to load plugins: {e}")
     
     # Add command handlers
     application.add_handler(CommandHandler("start", start))
@@ -356,16 +433,35 @@ def main():
     application.add_handler(CommandHandler("addadmin", add_admin))
     application.add_handler(CommandHandler("addkeyword", add_keyword))
     application.add_handler(CommandHandler("delkeyword", delete_keyword))
+    application.add_handler(CommandHandler("listkeyword", list_keywords))
     application.add_handler(CommandHandler("listmembers", list_members))
     application.add_handler(CommandHandler("broadcast", broadcast))
     application.add_handler(CommandHandler("history", view_history))
     application.add_handler(CommandHandler("stats", view_stats))
-    application.add_handler(CommandHandler("debug", debug_history))  # Add debug command
     
-    # Add message handler (must be last)
+    if GEMINI_ENABLED:
+        application.add_handler(CommandHandler("geministatus", gemini_status))
+    
+    # Load plugins if enabled
+    if PLUGINS_ENABLED:
+        try:
+            from plugins import plugin_manager
+            loaded_plugins = plugin_manager.load_plugins(application)
+            if loaded_plugins:
+                logger.info(f"Loaded {len(loaded_plugins)} plugins: {', '.join(loaded_plugins)}")
+            else:
+                logger.info("No plugins found or loaded")
+        except ImportError:
+            logger.warning("Plugin system not available - continuing without plugins")
+        except Exception as e:
+            logger.error(f"Error loading plugins: {e}")
+    
+    # Handle unknown commands (messages starting with / but not recognized)
+    application.add_handler(MessageHandler(filters.COMMAND, handle_unknown_command))
+    
+    # Handle regular text messages (not commands)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    # Start bot
     logger.info("Bot started successfully!")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 

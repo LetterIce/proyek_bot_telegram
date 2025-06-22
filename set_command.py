@@ -17,12 +17,13 @@ commands_for_admin = [
     *commands_for_all, 
     BotCommand("addkeyword", "➕ Tambah keyword & jawaban"),
     BotCommand("delkeyword", "➖ Hapus keyword"),
+    BotCommand("listkeyword", "📝 Lihat semua keyword"),
     BotCommand("listmembers", "👥 Lihat daftar member"),
     BotCommand("broadcast", "📢 Kirim pesan ke semua member"),
     BotCommand("addadmin", "👑 Tambah admin baru"),
     BotCommand("history", "📜 Lihat riwayat pesan"),
     BotCommand("stats", "📊 Lihat statistik bot"),
-    BotCommand("userstats", "📋 Lihat statistik user tertentu")
+    BotCommand("geministatus", "🧠 Cek status Gemini AI")
 ]
 
 async def set_bot_commands():
