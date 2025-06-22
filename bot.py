@@ -56,18 +56,31 @@ async def register(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle regular text messages."""
     user_id = update.effective_user.id
-    text = update.message.text.lower().strip()
+    text = update.message.text.strip()
+    original_text = text
+    text_lower = text.lower()
+    
+    # Update user activity (this won't affect registration status)
+    from utils import update_user_activity
+    update_user_activity(user_id)
+    
+    # Log the incoming message
+    logger.info(f"User {user_id} sent message: {text[:50]}...")
     
     # Get keyword response
-    response = db.get_keyword_response(text)
+    response = db.get_keyword_response(text_lower)
     
     if response:
         await update.message.reply_text(response)
-        db.log_message(user_id, text, response)
+        # Log successful message interaction
+        log_success = db.log_message(user_id, original_text, response)
+        logger.info(f"Keyword response logged: {log_success}")
     else:
         default_response = "🤔 Maaf, saya tidak mengerti perintah itu. Ketik /help untuk bantuan."
         await update.message.reply_text(default_response)
-        db.log_message(user_id, text, default_response)
+        # Log default response
+        log_success = db.log_message(user_id, original_text, default_response)
+        logger.info(f"Default response logged: {log_success}")
 
 @admin_only
 async def add_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -186,37 +199,138 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/broadcast `<message>` - Broadcast message\n"
             "/history [user_id] - View message history\n"
             "/stats - View bot statistics\n"
+            "/debug - Debug message history\n"
         )
         help_text += admin_help
     
     await update.message.reply_text(help_text, parse_mode='Markdown')
 
 @admin_only
+async def view_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """View bot statistics."""
+    try:
+        stats = db.get_all_stats()
+        users = db.get_all_users()
+        registered_users = db.get_registered_users()
+        
+        stats_text = (
+            f"📊 **Bot Statistics:**\n\n"
+            f"👥 Total Users: {len(users)}\n"
+            f"✅ Registered Users: {len(registered_users)}\n"
+            f"🔧 Total Registrations: {stats.get('total_registrations', '0')}\n"
+            f"📝 Total Messages: {stats.get('total_messages', '0')}\n"
+            f"🚀 Bot Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+        
+        await update.message.reply_text(stats_text, parse_mode='Markdown')
+    except Exception as e:
+        logger.error(f"Error getting stats: {e}")
+        await update.message.reply_text("❌ Error retrieving statistics.")
+
+@admin_only
 async def view_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """View message history."""
-    if context.args:
-        try:
-            target_user_id = int(context.args[0])
-            history = db.get_user_history(target_user_id, 10)
-            title = f"📝 **History for User {target_user_id}:**\n\n"
-        except ValueError:
-            await update.message.reply_text("❌ Invalid user ID")
+    try:
+        if context.args:
+            try:
+                target_user_id = int(context.args[0])
+                history = db.get_user_history(target_user_id, 10)
+                title = f"📝 History for User {target_user_id}:\n\n"
+            except ValueError:
+                await update.message.reply_text("❌ Invalid user ID. Please provide a numeric user ID.")
+                return
+        else:
+            history = db.get_global_history(10)
+            title = "📝 Global Message History:\n\n"
+        
+        if not history:
+            await update.message.reply_text("📭 No history found.")
             return
-    else:
-        history = db.get_global_history(10)
-        title = "📝 **Global Message History:**\n\n"
-    
-    if not history:
-        await update.message.reply_text("No history found.")
-        return
-    
-    message = title + '\n'.join([
-        f"🕐 {record['timestamp']}\n👤 User {record['user_id']}: {record['message_text'][:50]}...\n🤖 Bot: {record['response_text'][:50]}...\n"
-        for record in history
-    ])
-    
-    for chunk in split_message(message):
-        await update.message.reply_text(chunk, parse_mode='Markdown')
+        
+        message = title
+        for i, record in enumerate(history, 1):
+            # Safely get values with defaults
+            timestamp = record.get('timestamp', 'Unknown time')
+            user_id = record.get('user_id', 'Unknown user')
+            message_text = record.get('message_text', 'No message')[:100]
+            response_text = record.get('response_text', 'No response')[:100]
+            
+            # Clean up the message text for safe display
+            message_text = message_text.replace('*', '\\*').replace('_', '\\_').replace('`', '\\`')
+            response_text = response_text.replace('*', '\\*').replace('_', '\\_').replace('`', '\\`')
+            
+            entry = (
+                f"{i}. 🕐 {timestamp}\n"
+                f"   👤 User {user_id}: {message_text}\n"
+                f"   🤖 Bot: {response_text}\n\n"
+            )
+            message += entry
+        
+        # Split and send message chunks
+        chunks = split_message(message, max_length=4000)
+        for chunk in chunks:
+            await update.message.reply_text(chunk, parse_mode='Markdown')
+            
+    except Exception as e:
+        logger.error(f"Error getting history: {e}")
+        await update.message.reply_text("❌ Error retrieving message history.")
+
+@admin_only
+async def debug_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Debug command to check message history table."""
+    try:
+        # Check if message_history table exists and has data
+        with db.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Check table structure
+            cursor.execute("PRAGMA table_info(message_history)")
+            table_info = cursor.fetchall()
+            
+            # Count total records
+            cursor.execute("SELECT COUNT(*) FROM message_history")
+            total_records = cursor.fetchone()[0]
+            
+            # Get recent records with more details
+            cursor.execute("""
+                SELECT id, user_id, message_text, response_text, timestamp 
+                FROM message_history 
+                ORDER BY timestamp DESC 
+                LIMIT 5
+            """)
+            recent_records = cursor.fetchall()
+            
+            debug_text = f"🔍 **Debug History:**\n\n"
+            debug_text += f"📊 Total records: {total_records}\n"
+            debug_text += f"📋 Table columns: {len(table_info)}\n\n"
+            
+            if table_info:
+                debug_text += "🏗️ **Table Structure:**\n"
+                for col in table_info:
+                    debug_text += f"• {col[1]} ({col[2]})\n"
+                debug_text += "\n"
+            
+            if recent_records:
+                debug_text += "📝 **Recent Records:**\n"
+                for record in recent_records:
+                    debug_text += f"• ID: {record[0]}\n"
+                    debug_text += f"  User: {record[1]}\n"
+                    debug_text += f"  Message: {record[2][:30]}...\n"
+                    debug_text += f"  Response: {record[3][:30]}...\n"
+                    debug_text += f"  Time: {record[4]}\n\n"
+            else:
+                debug_text += "❌ No records found in message_history table\n"
+            
+            # Also check if there are any users
+            cursor.execute("SELECT COUNT(*) FROM users")
+            user_count = cursor.fetchone()[0]
+            debug_text += f"👥 Total users in database: {user_count}\n"
+            
+            await update.message.reply_text(debug_text, parse_mode='Markdown')
+            
+    except Exception as e:
+        logger.error(f"Debug history error: {e}")
+        await update.message.reply_text(f"❌ Debug error: {str(e)}")
 
 def main():
     """Main function to run the bot."""
@@ -245,6 +359,8 @@ def main():
     application.add_handler(CommandHandler("listmembers", list_members))
     application.add_handler(CommandHandler("broadcast", broadcast))
     application.add_handler(CommandHandler("history", view_history))
+    application.add_handler(CommandHandler("stats", view_stats))
+    application.add_handler(CommandHandler("debug", debug_history))  # Add debug command
     
     # Add message handler (must be last)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))

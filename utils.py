@@ -91,13 +91,18 @@ def check_rate_limit(user_id: int) -> bool:
         return True
 
 def update_user_info(user: User):
-    """Update user information in database."""
+    """Update user information in database without affecting registration status."""
+    # Use the new method that preserves existing user data
     db.add_user(
         user_id=user.id,
         username=user.username,
         first_name=user.first_name,
         last_name=user.last_name
     )
+
+def update_user_activity(user_id: int):
+    """Update user's last activity timestamp."""
+    db.update_user_activity(user_id)
 
 async def safe_send_message(context: ContextTypes.DEFAULT_TYPE, chat_id: int, text: str, **kwargs) -> bool:
     """Safely send message with error handling."""
@@ -182,24 +187,31 @@ def format_stats(stats: dict) -> str:
     
     return text
 
-def split_message(text: str, max_length: int = 4096) -> List[str]:
-    """Split long message into chunks."""
+def split_message(text, max_length=4096):
+    """Split long messages into chunks."""
     if len(text) <= max_length:
         return [text]
     
     chunks = []
-    while text:
-        if len(text) <= max_length:
-            chunks.append(text)
-            break
-        
-        # Find last newline within limit
-        split_pos = text.rfind('\n', 0, max_length)
-        if split_pos == -1:
-            split_pos = max_length
-        
-        chunks.append(text[:split_pos])
-        text = text[split_pos:].lstrip('\n')
+    current_chunk = ""
+    
+    lines = text.split('\n')
+    for line in lines:
+        if len(current_chunk) + len(line) + 1 <= max_length:
+            current_chunk += line + '\n'
+        else:
+            if current_chunk:
+                chunks.append(current_chunk.rstrip())
+                current_chunk = line + '\n'
+            else:
+                # Line is too long, split it
+                while len(line) > max_length:
+                    chunks.append(line[:max_length])
+                    line = line[max_length:]
+                current_chunk = line + '\n' if line else ""
+    
+    if current_chunk:
+        chunks.append(current_chunk.rstrip())
     
     return chunks
 
