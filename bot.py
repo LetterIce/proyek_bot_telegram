@@ -515,19 +515,24 @@ async def list_keywords(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keywords = db.get_all_keywords()
         
         if not keywords:
-            await update.message.reply_text("❌ Belum ada kata kunci yang tersedia.\n\nGunakan `/addkeyword <kata_kunci> | <respon>` untuk menambahkan kata kunci baru.", parse_mode='Markdown')
+            await update.message.reply_text(
+                "❌ Belum ada kata kunci yang tersedia.\n\nGunakan `/addkeyword <kata_kunci> | <respon>` untuk menambahkan kata kunci baru.",
+                parse_mode='Markdown'
+            )
             return
-        
-        message = f"📝 **Daftar Kata Kunci** ({len(keywords)} total):\n\n"
-        
+
+        total = len(keywords)
+        header = f"📝 **Daftar Kata Kunci** ({total} total):\n\n"
+        batch_size = 5 if total > 15 else 1  # Send 1 per message if few, 5 per message if many
+
+        entries = []
         for i, keyword_data in enumerate(keywords, 1):
             keyword = keyword_data.get('keyword', 'Unknown')
             response = keyword_data.get('response', 'No response')
             usage_count = keyword_data.get('usage_count', 0)
             created_at = keyword_data.get('created_at', 'Unknown')
-            
-            display_response = response[:80] + "..." if len(response) > 80 else response
-            
+            # No truncation for response
+            display_response = response
             if created_at and created_at != 'Unknown':
                 try:
                     date_part = created_at[:10]
@@ -535,19 +540,23 @@ async def list_keywords(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     date_part = 'Unknown'
             else:
                 date_part = 'Unknown'
-            
             entry = (
                 f"{i}. **{keyword}**\n"
-                f"   📝 Respon: {display_response}\n"
-                f"   📊 Digunakan: {usage_count}x\n"
-                f"   📅 Dibuat: {date_part}\n\n"
+                f"   Respon: {display_response}\n"
+                f"   Digunakan: {usage_count}x\n"
+                f"   Dibuat: {date_part}\n"
             )
-            message += entry
-        
-        chunks = split_message(message, max_length=4000)
-        for chunk in chunks:
-            await update.message.reply_text(chunk, parse_mode='Markdown')
-            
+            entries.append(entry)
+
+        # Send in batches
+        for batch_start in range(0, len(entries), batch_size):
+            batch = entries[batch_start:batch_start+batch_size]
+            if batch_start == 0:
+                msg = header + "\n".join(batch)
+            else:
+                msg = "\n".join(batch)
+            await update.message.reply_text(msg, parse_mode='Markdown')
+
         logger.info(f"Successfully sent keyword list with {len(keywords)} keywords")
         
     except Exception as e:
