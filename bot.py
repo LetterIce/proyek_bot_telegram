@@ -44,8 +44,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_text = (
         f"👋 Halo, {user.first_name}! Senang bertemu dengan Anda.\n\n"
         "Saya adalah bot AI yang siap menjadi teman diskusi Anda.\n"
-        "Anda bisa bertanya apa saja, mulai dari hal ringan hingga topik yang kompleks.\n"
-        "Mau coba? Tanyakan sesuatu pada saya!"
+        "Silahkan registrasi dengan perintah /register untuk mulai menggunakan bot.\n\n"
     )
     
     await update.message.reply_text(welcome_text)
