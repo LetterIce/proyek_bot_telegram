@@ -70,20 +70,20 @@ def get_system_info():
         
         # CPU info - get actual processor information
         try:
-            cpu_info = platform.processor()
-            
-            # If platform.processor() doesn't work, try alternative methods
+            cpu_info = None
+            if platform.system() == "Linux":
+                try:
+                    with open('/proc/cpuinfo', 'r') as f:
+                        for line in f:
+                            if 'model name' in line:
+                                cpu_info = line.split(':')[1].strip()
+                                break
+                except Exception as e:
+                    logger.warning(f"Could not read /proc/cpuinfo: {e}")
+            if not cpu_info:
+                cpu_info = platform.processor()
             if not cpu_info or cpu_info.strip() == "":
-                if platform.system() == "Linux":
-                    try:
-                        with open('/proc/cpuinfo', 'r') as f:
-                            for line in f:
-                                if 'model name' in line:
-                                    cpu_info = line.split(':')[1].strip()
-                                    break
-                    except:
-                        pass
-                elif platform.system() == "Windows":
+                if platform.system() == "Windows":
                     try:
                         import winreg
                         key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"HARDWARE\DESCRIPTION\System\CentralProcessor\0")
@@ -91,15 +91,10 @@ def get_system_info():
                         winreg.CloseKey(key)
                     except:
                         pass
-                
                 # Final fallback
                 if not cpu_info:
                     cpu_info = f"Unknown CPU ({psutil.cpu_count()} cores)"
-            
             info['cpu'] = cpu_info
-            info['cpu_cores'] = psutil.cpu_count(logical=True)
-            info['cpu_cores_physical'] = psutil.cpu_count(logical=False)
-            
             # Get actual CPU usage with a short interval
             cpu_usage = psutil.cpu_percent(interval=0.1)
             info['cpu_usage'] = f"{cpu_usage:.1f}%"
@@ -182,14 +177,11 @@ def get_system_info():
             logger.warning(f"Could not get network info: {e}")
             info['local_ip'] = "Unknown"
         
-        # Python version
-        info['python_version'] = platform.python_version()
-        
         # Get load average (Unix-like systems only)
         try:
             if hasattr(os, 'getloadavg'):
                 load_avg = os.getloadavg()
-                info['load_avg'] = f"{load_avg[0]:.2f}, {load_avg[1]:.2f}, {load_avg[2]:.2f}"
+                info['load_avg'] = f"{load_avg[1]:.2f}"  # 5-minute interval
         except:
             pass
         
@@ -209,9 +201,6 @@ def get_bot_process_info():
         info['pid'] = process.pid
         info['ppid'] = process.ppid()
         info['name'] = process.name()
-        
-        # CPU and memory usage
-        info['cpu_percent'] = f"{process.cpu_percent(interval=0.1):.1f}%"
         
         memory_info = process.memory_info()
         info['memory_mb'] = f"{memory_info.rss / (1024**2):.1f} MB"
@@ -282,7 +271,7 @@ def format_system_stats():
         
         # Load average (if available)
         if sys_info.get('load_avg'):
-            stats_text += f"⚡ Load Avg: {sys_info['load_avg']}\n"
+            stats_text += f"⚡ Load Avg (5 min): {sys_info['load_avg']}\n"
         
         # Memory Info
         if sys_info.get('memory_total'):
