@@ -208,7 +208,10 @@ def get_bot_process_info():
         # Add CPU usage for the process
         try:
             cpu_percent = process.cpu_percent(interval=0.1)
-            info['cpu_percent'] = f"{cpu_percent:.1f}%"
+            if cpu_percent is None:
+                info['cpu_percent'] = "Unknown"
+            else:
+                info['cpu_percent'] = f"{cpu_percent:.1f}%"
         except Exception:
             info['cpu_percent'] = "Unknown"
         
@@ -299,8 +302,10 @@ def format_system_stats():
                 stats_text += "\n"
             if bot_info.get('runtime'):
                 stats_text += f"⏰ Runtime: {bot_info['runtime']}\n"
-            if bot_info.get('cpu_percent'):
-                stats_text += f"🔧 CPU Usage: {bot_info['cpu_percent']}\n"
+            # Only show CPU Usage if present and not None/empty
+            cpu_percent = bot_info.get('cpu_percent')
+            if cpu_percent and isinstance(cpu_percent, str) and cpu_percent != "Unknown":
+                stats_text += f"🔧 CPU Usage: {cpu_percent}\n"
             if bot_info.get('memory_mb'):
                 stats_text += f"🧠 Memory: {bot_info['memory_mb']}\n"
             if bot_info.get('threads'):
