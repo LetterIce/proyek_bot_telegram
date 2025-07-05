@@ -245,8 +245,8 @@ def get_bot_process_info():
 def format_system_stats():
     """Format system information for display."""
     try:
-        sys_info = get_system_info()
-        bot_info = get_bot_process_info()
+        sys_info = get_system_info() or {}
+        bot_info = get_bot_process_info() or {}
         
         if not sys_info:
             return "❌ Unable to retrieve system information"
@@ -254,64 +254,90 @@ def format_system_stats():
         stats_text = "🖥️ **Server Information:**\n\n"
         
         # OS Info
-        if sys_info.get('os'):
-            stats_text += f"💻 OS: {sys_info['os']}"
-            if sys_info.get('arch'):
-                stats_text += f" ({sys_info['arch']})"
+        os_val = sys_info.get('os', '')
+        if os_val:
+            stats_text += f"💻 OS: {os_val}"
+            arch_val = sys_info.get('arch', '')
+            if arch_val:
+                stats_text += f" ({arch_val})"
             stats_text += "\n"
         
-        if sys_info.get('hostname'):
-            stats_text += f"🏷️ Host: {sys_info['hostname']}\n"
+        hostname_val = sys_info.get('hostname', '')
+        if hostname_val:
+            stats_text += f"🏷️ Host: {hostname_val}\n"
         
-        if sys_info.get('uptime'):
-            stats_text += f"⏱️ Uptime: {sys_info['uptime']}\n"
+        uptime_val = sys_info.get('uptime', '')
+        if uptime_val:
+            stats_text += f"⏱️ Uptime: {uptime_val}\n"
         
         # CPU Info
         stats_text += "\n💾 **Hardware:**\n"
-        if sys_info.get('cpu'):
-            stats_text += f"🔧 CPU: {sys_info['cpu']}\n"
-        if sys_info.get('cpu_usage'):
-            stats_text += f"📊 CPU Usage: {sys_info['cpu_usage']}\n"
+        cpu_val = sys_info.get('cpu', '')
+        if cpu_val:
+            stats_text += f"🔧 CPU: {cpu_val}\n"
+        cpu_usage_val = sys_info.get('cpu_usage', '')
+        if cpu_usage_val:
+            stats_text += f"📊 CPU Usage: {cpu_usage_val}\n"
         
         # Load average (if available)
-        if sys_info.get('load_avg'):
-            stats_text += f"⚡ Load Avg (5 min): {sys_info['load_avg']}\n"
+        load_avg_val = sys_info.get('load_avg', '')
+        if load_avg_val:
+            stats_text += f"⚡ Load Avg (5 min): {load_avg_val}\n"
         
         # Memory Info
-        if sys_info.get('memory_total'):
-            stats_text += f"🧠 Memory: {sys_info['memory_used']} / {sys_info['memory_total']} ({sys_info['memory_percent']})\n"
+        mem_used = sys_info.get('memory_used', '')
+        mem_total = sys_info.get('memory_total', '')
+        mem_percent = sys_info.get('memory_percent', '')
+        if mem_total and mem_used and mem_percent:
+            stats_text += f"🧠 Memory: {mem_used} / {mem_total} ({mem_percent})\n"
         
-        if sys_info.get('swap_total') and float(sys_info['swap_total'].split()[0]) > 0:
-            stats_text += f"💱 Swap: {sys_info['swap_used']} / {sys_info['swap_total']} ({sys_info['swap_percent']})\n"
+        swap_total = sys_info.get('swap_total', '')
+        swap_used = sys_info.get('swap_used', '')
+        swap_percent = sys_info.get('swap_percent', '')
+        try:
+            swap_total_num = float(swap_total.split()[0]) if swap_total else 0
+        except Exception:
+            swap_total_num = 0
+        if swap_total and swap_used and swap_percent and swap_total_num > 0:
+            stats_text += f"💱 Swap: {swap_used} / {swap_total} ({swap_percent})\n"
         
         # Disk Info
-        if sys_info.get('disk_total'):
-            stats_text += f"💿 Disk: {sys_info['disk_used']} / {sys_info['disk_total']} ({sys_info['disk_percent']})\n"
+        disk_used = sys_info.get('disk_used', '')
+        disk_total = sys_info.get('disk_total', '')
+        disk_percent = sys_info.get('disk_percent', '')
+        if disk_total and disk_used and disk_percent:
+            stats_text += f"💿 Disk: {disk_used} / {disk_total} ({disk_percent})\n"
         
         # Network Info
-        if sys_info.get('local_ip'):
-            stats_text += f"🌐 Network: {sys_info['local_ip']}\n"
+        local_ip = sys_info.get('local_ip', '')
+        if local_ip:
+            stats_text += f"🌐 Network: {local_ip}\n"
         
         # Bot Process Info
         if bot_info:
             stats_text += "\n🤖 **Bot Process:**\n"
-            if bot_info.get('pid'):
-                stats_text += f"🆔 PID: {bot_info['pid']}"
-                if bot_info.get('ppid'):
-                    stats_text += f" (Parent: {bot_info['ppid']})"
+            pid_val = bot_info.get('pid', '')
+            if pid_val:
+                stats_text += f"🆔 PID: {pid_val}"
+                ppid_val = bot_info.get('ppid', '')
+                if ppid_val:
+                    stats_text += f" (Parent: {ppid_val})"
                 stats_text += "\n"
-            if bot_info.get('runtime'):
-                stats_text += f"⏰ Runtime: {bot_info['runtime']}\n"
-            # Only show CPU Usage if present and not None/empty
-            cpu_percent = bot_info.get('cpu_percent')
+            runtime_val = bot_info.get('runtime', '')
+            if runtime_val:
+                stats_text += f"⏰ Runtime: {runtime_val}\n"
+            cpu_percent = bot_info.get('cpu_percent', '')
             if cpu_percent and isinstance(cpu_percent, str) and cpu_percent != "Unknown":
                 stats_text += f"🔧 CPU Usage: {cpu_percent}\n"
-            if bot_info.get('memory_mb'):
-                stats_text += f"🧠 Memory: {bot_info['memory_mb']}\n"
-            if bot_info.get('threads'):
-                stats_text += f"🧵 Threads: {bot_info['threads']}\n"
-            if bot_info.get('status'):
-                stats_text += f"📊 Status: {bot_info['status']}\n"
+            memory_mb = bot_info.get('memory_mb', '')
+            if memory_mb:
+                stats_text += f"🧠 Memory: {memory_mb}\n"
+            threads = bot_info.get('threads', '')
+            if threads:
+                stats_text += f"🧵 Threads: {threads}\n"
+            status = bot_info.get('status', '')
+            if status:
+                stats_text += f"📊 Status: {status}\n"
         
         return stats_text
         
