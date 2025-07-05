@@ -140,7 +140,8 @@ def start():
     welcome_text = (
         f"👋 Halo, {first_name}! Senang bertemu dengan Anda.\n\n"
         "Saya adalah bot AI yang siap menjadi teman diskusi Anda.\n"
-        "Silahkan registrasi dengan perintah /register untuk mulai menggunakan bot.\n\n"
+        "Anda bisa bertanya apa saja, mulai dari hal ringan hingga topik yang kompleks.\n"
+        "Mau coba? Tanyakan sesuatu pada saya!"
     )
     return jsonify({"message": welcome_text})
 
