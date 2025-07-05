@@ -341,9 +341,9 @@ def format_system_stats():
     try:
         sys_info = get_system_info()
         bot_info = get_bot_process_info()
-        
+
         stats_text = "🖥️ Server Information:\n\n"
-        
+
         # OS Info
         if sys_info.get('os') != 'Unknown':
             os_info = sanitize_text(sys_info['os'])
@@ -352,63 +352,95 @@ def format_system_stats():
                 arch_info = sanitize_text(sys_info['arch'])
                 stats_text += f" ({arch_info})"
             stats_text += "\n"
-        
+
         if sys_info.get('hostname') != 'Unknown':
             hostname = sanitize_text(sys_info['hostname'])
             stats_text += f"🏷️ Host: {hostname}\n"
-        
+
         if sys_info.get('uptime') != 'Unknown':
             uptime = sanitize_text(sys_info['uptime'])
             stats_text += f"⏱️ Uptime: {uptime}\n"
-        
+
         # CPU Info
         stats_text += "\n💾 Hardware:\n"
         if sys_info.get('cpu') != 'Unknown':
             cpu_info = sanitize_text(sys_info['cpu'])
             stats_text += f"🔧 CPU: {cpu_info}\n"
         if sys_info.get('cpu_usage') != 'Unknown':
-            cpu_usage = sanitize_text(sys_info['cpu_usage'])
+            try:
+                cpu_usage_val = float(sys_info['cpu_usage'].replace('%', '').strip())
+                cpu_usage = f"{cpu_usage_val:.1f}%"
+            except Exception:
+                cpu_usage = sanitize_text(sys_info['cpu_usage'])
             stats_text += f"📊 CPU Usage: {cpu_usage}\n"
-        
+
         # Load average (if available)
         if sys_info.get('load_avg'):
-            load_avg = sanitize_text(sys_info['load_avg'])
+            try:
+                load_avg_val = float(sys_info['load_avg'])
+                load_avg = f"{load_avg_val:.2f}"
+            except Exception:
+                load_avg = sanitize_text(sys_info['load_avg'])
             stats_text += f"⚡ Load Avg (5 min): {load_avg}\n"
-        
+
         # Memory Info
         if (sys_info.get('memory_total') != 'Unknown' and 
             sys_info.get('memory_used') != 'Unknown' and 
             sys_info.get('memory_percent') != 'Unknown'):
-            mem_used = sanitize_text(sys_info['memory_used'])
-            mem_total = sanitize_text(sys_info['memory_total'])
-            mem_percent = sanitize_text(sys_info['memory_percent'])
+            try:
+                mem_used_val = float(sys_info['memory_used'].split()[0])
+                mem_total_val = float(sys_info['memory_total'].split()[0])
+                mem_percent_val = float(sys_info['memory_percent'].replace('%', '').strip())
+                mem_used = f"{mem_used_val:.2f} GB"
+                mem_total = f"{mem_total_val:.2f} GB"
+                mem_percent = f"{mem_percent_val:.1f}%"
+            except Exception:
+                mem_used = sanitize_text(sys_info['memory_used'])
+                mem_total = sanitize_text(sys_info['memory_total'])
+                mem_percent = sanitize_text(sys_info['memory_percent'])
             stats_text += f"🧠 Memory: {mem_used} / {mem_total} ({mem_percent})\n"
-        
+
         # Swap Info (only if swap exists)
         try:
             swap_total_num = float(sys_info.get('swap_total', '0').split()[0])
             if swap_total_num > 0:
-                swap_used = sanitize_text(sys_info['swap_used'])
-                swap_total = sanitize_text(sys_info['swap_total'])
-                swap_percent = sanitize_text(sys_info['swap_percent'])
+                try:
+                    swap_used_val = float(sys_info['swap_used'].split()[0])
+                    swap_total_val = float(sys_info['swap_total'].split()[0])
+                    swap_percent_val = float(sys_info['swap_percent'].replace('%', '').strip())
+                    swap_used = f"{swap_used_val:.2f} GB"
+                    swap_total = f"{swap_total_val:.2f} GB"
+                    swap_percent = f"{swap_percent_val:.1f}%"
+                except Exception:
+                    swap_used = sanitize_text(sys_info['swap_used'])
+                    swap_total = sanitize_text(sys_info['swap_total'])
+                    swap_percent = sanitize_text(sys_info['swap_percent'])
                 stats_text += f"💱 Swap: {swap_used} / {swap_total} ({swap_percent})\n"
         except (ValueError, AttributeError):
             pass
-        
+
         # Disk Info
         if (sys_info.get('disk_total') != 'Unknown' and 
             sys_info.get('disk_used') != 'Unknown' and 
             sys_info.get('disk_percent') != 'Unknown'):
-            disk_used = sanitize_text(sys_info['disk_used'])
-            disk_total = sanitize_text(sys_info['disk_total'])
-            disk_percent = sanitize_text(sys_info['disk_percent'])
+            try:
+                disk_used_val = float(sys_info['disk_used'].split()[0])
+                disk_total_val = float(sys_info['disk_total'].split()[0])
+                disk_percent_val = float(sys_info['disk_percent'].replace('%', '').strip())
+                disk_used = f"{disk_used_val:.2f} GB"
+                disk_total = f"{disk_total_val:.2f} GB"
+                disk_percent = f"{disk_percent_val:.1f}%"
+            except Exception:
+                disk_used = sanitize_text(sys_info['disk_used'])
+                disk_total = sanitize_text(sys_info['disk_total'])
+                disk_percent = sanitize_text(sys_info['disk_percent'])
             stats_text += f"💿 Disk: {disk_used} / {disk_total} ({disk_percent})\n"
-        
+
         # Network Info
         if sys_info.get('local_ip') != 'Unknown':
             local_ip = sanitize_text(sys_info['local_ip'])
             stats_text += f"🌐 Network: {local_ip}\n"
-        
+
         # Bot Process Info
         if any(v != 'Unknown' for v in bot_info.values()):
             stats_text += "\n🤖 Bot Process:\n"
@@ -423,10 +455,18 @@ def format_system_stats():
                 runtime = sanitize_text(bot_info['runtime'])
                 stats_text += f"⏰ Runtime: {runtime}\n"
             if bot_info.get('cpu_percent') != 'Unknown':
-                cpu_percent = sanitize_text(bot_info['cpu_percent'])
+                try:
+                    cpu_percent_val = float(str(bot_info['cpu_percent']).replace('%', '').strip())
+                    cpu_percent = f"{cpu_percent_val:.1f}%"
+                except Exception:
+                    cpu_percent = sanitize_text(bot_info['cpu_percent'])
                 stats_text += f"🔧 CPU Usage: {cpu_percent}\n"
             if bot_info.get('memory_mb') != 'Unknown':
-                memory_mb = sanitize_text(bot_info['memory_mb'])
+                try:
+                    memory_mb_val = float(str(bot_info['memory_mb']).split()[0])
+                    memory_mb = f"{memory_mb_val:.1f} MB"
+                except Exception:
+                    memory_mb = sanitize_text(bot_info['memory_mb'])
                 stats_text += f"🧠 Memory: {memory_mb}\n"
             if bot_info.get('threads') != 'Unknown':
                 threads = sanitize_text(str(bot_info['threads']))
@@ -434,10 +474,9 @@ def format_system_stats():
             if bot_info.get('status') != 'Unknown':
                 status = sanitize_text(bot_info['status'])
                 stats_text += f"📊 Status: {status}\n"
-        
-        
+
         return stats_text
-        
+
     except Exception as e:
         logger.error(f"Error formatting system stats: {e}")
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
