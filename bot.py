@@ -8,7 +8,7 @@ from database import db
 from ai_core import ai_core
 from utils import registered_only, admin_only, rate_limit, update_user_info, broadcast_message, format_user_info, split_message, is_admin, update_user_activity
 from image_utils import download_image, validate_and_process_image, get_image_info, is_image_file
-from system_info import format_system_stats
+from system_info import format_system_stats, get_bot_process_info
 
 # Setup logging
 logging.basicConfig(

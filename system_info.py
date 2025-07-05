@@ -205,6 +205,13 @@ def get_bot_process_info():
         info['memory_mb'] = f"{memory_info.rss / (1024**2):.1f} MB"
         info['memory_vms'] = f"{memory_info.vms / (1024**2):.1f} MB"
         
+        # Add CPU usage for the process
+        try:
+            cpu_percent = process.cpu_percent(interval=0.1)
+            info['cpu_percent'] = f"{cpu_percent:.1f}%"
+        except Exception:
+            info['cpu_percent'] = "Unknown"
+        
         # Process details
         info['threads'] = process.num_threads()
         info['status'] = process.status()
