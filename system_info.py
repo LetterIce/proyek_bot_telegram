@@ -101,7 +101,6 @@ def get_system_info():
         except Exception as e:
             logger.warning(f"Could not get CPU info: {e}")
             info['cpu'] = "Unknown"
-            info['cpu_cores'] = "Unknown"
             info['cpu_usage'] = "Unknown"
         
         # Memory info - get actual memory usage
@@ -261,11 +260,6 @@ def format_system_stats():
         stats_text += "\n💾 **Hardware:**\n"
         if sys_info.get('cpu'):
             stats_text += f"🔧 CPU: {sys_info['cpu']}\n"
-        if sys_info.get('cpu_cores'):
-            cores_text = f"🔗 Cores: {sys_info['cpu_cores']}"
-            if sys_info.get('cpu_cores_physical'):
-                cores_text += f" ({sys_info['cpu_cores_physical']} physical)"
-            stats_text += cores_text + "\n"
         if sys_info.get('cpu_usage'):
             stats_text += f"📊 CPU Usage: {sys_info['cpu_usage']}\n"
         
@@ -306,10 +300,6 @@ def format_system_stats():
                 stats_text += f"🧵 Threads: {bot_info['threads']}\n"
             if bot_info.get('status'):
                 stats_text += f"📊 Status: {bot_info['status']}\n"
-        
-        # Python Info
-        if sys_info.get('python_version'):
-            stats_text += f"🐍 Python: {sys_info['python_version']}\n"
         
         return stats_text
         
