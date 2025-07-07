@@ -21,18 +21,26 @@ def chat():
     print("JSON:", request.get_json())
     data = request.get_json()
     message = data.get('message', '') if data else ''
+    user_id = data.get('user_id', None) if data else None  # Accept user_id from client if provided
     if not message:
         return jsonify({'error': 'No message provided'}), 400
 
     # Check for keyword match first
     keyword_response = db.get_keyword_response(message)
     if keyword_response:
+        # Log keyword response if user_id is provided
+        if user_id:
+            db.log_message(user_id, message, keyword_response, 'keyword')
         return jsonify({'response': keyword_response})
 
     # If no keyword match, use AI
     response = ai_core.generate_response(message)
     if hasattr(response, '__await__'):
         response = asyncio.run(response)
+
+    # Log AI response if user_id is provided
+    if user_id:
+        db.log_message(user_id, message, response, 'ai')
 
     return jsonify({'response': response})
 
