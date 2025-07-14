@@ -24,13 +24,14 @@ def chat():
     user_id = data.get('user_id', None) if data else None  # Accept user_id from client if provided
     if not message:
         return jsonify({'error': 'No message provided'}), 400
+    if not user_id:
+        return jsonify({'error': 'user_id required'}), 400
 
     # Check for keyword match first
     keyword_response = db.get_keyword_response(message)
     if keyword_response:
-        # Log keyword response if user_id is provided
-        if user_id:
-            db.log_message(user_id, message, keyword_response, 'keyword')
+        # Log keyword response
+        db.log_message(user_id, message, keyword_response, 'keyword')
         return jsonify({'response': keyword_response})
 
     # If no keyword match, use AI
@@ -38,9 +39,8 @@ def chat():
     if hasattr(response, '__await__'):
         response = asyncio.run(response)
 
-    # Log AI response if user_id is provided
-    if user_id:
-        db.log_message(user_id, message, response, 'ai')
+    # Log AI response
+    db.log_message(user_id, message, response, 'ai')
 
     return jsonify({'response': response})
 
